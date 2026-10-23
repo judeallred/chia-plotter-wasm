@@ -1,0 +1,12 @@
+node_modules/
+dist/
+.astro/
+vendor/
+scratch/
+target/
+build/
+*.plot2
+*.bin
+.DS_Store
+core/build-*/
+keys/target/

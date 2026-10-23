@@ -1,0 +1,132 @@
+---
+import "../styles/app.css";
+---
+
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Chia PoS2 Browser Plotter</title>
+  </head>
+  <body>
+    <header>
+      <h1>Chia PoS2 Browser Plotter</h1>
+      <p class="sub">
+        Proof of Space v2 plots (<code>.plot2</code>) made in your browser with WebAssembly.
+        Format matches <code>chia plots create2</code> (chia_rs 0.49, pos2-chip 0.6.0). Alpha.
+      </p>
+    </header>
+
+    <main>
+      <section class="card" id="env">
+        <h2>Browser</h2>
+        <ul id="env-list"></ul>
+      </section>
+
+      <form class="card" id="config">
+        <h2>Plot settings</h2>
+
+        <label>
+          Farmer public key
+          <input name="farmerKey" required autocomplete="off" spellcheck="false"
+            placeholder="96 hex characters, from `chia keys show`" />
+          <span class="err" data-for="farmerKey"></span>
+        </label>
+
+        <fieldset>
+          <legend>Pool</legend>
+          <label class="inline"><input type="radio" name="poolMode" value="contract" checked /> Pool contract address (NFT plot)</label>
+          <label class="inline"><input type="radio" name="poolMode" value="pk" /> Pool public key (solo, OG)</label>
+          <label data-mode="contract">
+            Pool contract address
+            <input name="poolAddress" autocomplete="off" spellcheck="false" placeholder="xch1… from `chia plotnft show`" />
+            <span class="err" data-for="poolAddress"></span>
+          </label>
+          <label data-mode="pk" hidden>
+            Pool public key
+            <input name="poolKey" autocomplete="off" spellcheck="false" placeholder="96 hex characters" />
+            <span class="err" data-for="poolKey"></span>
+          </label>
+        </fieldset>
+
+        <div class="row">
+          <label>
+            Strength
+            <input name="strength" type="number" min="2" max="17" value="2" />
+            <small>2 to 17. Higher means fewer filter passes and less frequent lookups.</small>
+          </label>
+          <label>
+            Size (k)
+            <select name="k">
+              <option value="28" disabled>k28 (network size, about 1 GB, about 9 GB RAM, coming later)</option>
+              <option value="26" selected>k26 (test only, about 230 MB)</option>
+              <option value="24">k24 (test only, about 53 MB)</option>
+              <option value="22">k22 (test only, about 12 MB)</option>
+              <option value="20">k20 (test only)</option>
+              <option value="18">k18 (test only)</option>
+            </select>
+            <small>Farming requires k28. Smaller sizes are for testing the pipeline.</small>
+          </label>
+        </div>
+
+        <div class="row">
+          <label>
+            Number of plots
+            <input name="count" type="number" min="0" value="1" />
+            <small>0 keeps plotting until you stop.</small>
+          </label>
+          <label>
+            Threads
+            <input name="threads" type="number" min="1" />
+          </label>
+          <label>
+            Network
+            <select name="network">
+              <option value="mainnet" selected>mainnet</option>
+              <option value="testnet">testnet (testnet11)</option>
+            </select>
+          </label>
+        </div>
+
+        <fieldset>
+          <legend>Output</legend>
+          <label class="inline"><input type="radio" name="output" value="dir" /> Save into a folder <small id="dir-name"></small></label>
+          <label class="inline"><input type="radio" name="output" value="download" /> Download each plot</label>
+          <button type="button" id="pick-dir" class="secondary">Choose folder…</button>
+        </fieldset>
+
+        <div class="actions">
+          <button type="submit" id="start">Start plotting</button>
+          <button type="button" id="stop" class="danger" disabled>Stop</button>
+        </div>
+        <p class="err" id="form-error"></p>
+      </form>
+
+      <section class="card" id="status" hidden>
+        <h2>Current plot</h2>
+        <div class="bar"><div id="bar-fill"></div></div>
+        <p id="status-text"></p>
+      </section>
+
+      <section class="card">
+        <h2>Finished plots</h2>
+        <table id="history">
+          <thead>
+            <tr><th>File</th><th>Size</th><th>Plot</th><th>Write</th><th>Total</th><th></th></tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </section>
+    </main>
+
+    <footer>
+      Keys never leave this page. The plot secret key is generated locally and stored in the plot
+      memo, the same as <code>chia plots create2</code>.
+    </footer>
+
+    <script>
+      import { start } from "../lib/app";
+      start();
+    </script>
+  </body>
+</html>

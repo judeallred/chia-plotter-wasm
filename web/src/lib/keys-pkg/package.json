@@ -1,0 +1,16 @@
+{
+  "name": "plot-keys",
+  "type": "module",
+  "description": "Chia v2 plot ID and memo derivation for the browser",
+  "version": "0.1.0",
+  "files": [
+    "plot_keys_bg.wasm",
+    "plot_keys.js",
+    "plot_keys.d.ts"
+  ],
+  "main": "plot_keys.js",
+  "types": "plot_keys.d.ts",
+  "sideEffects": [
+    "./snippets/*"
+  ]
+}

@@ -1,0 +1,3 @@
+[submodule "third_party/pos2-chip"]
+	path = third_party/pos2-chip
+	url = https://github.com/Chia-Network/pos2-chip.git
