@@ -50,7 +50,7 @@ if(EMSCRIPTEN)
     -sDEFAULT_PTHREAD_STACK_SIZE=1MB
     -sPTHREAD_POOL_SIZE=navigator.hardwareConcurrency+2
     -sPTHREAD_POOL_SIZE_STRICT=0
-    -sEXPORTED_RUNTIME_METHODS=HEAPU8,UTF8ToString
+    -sEXPORTED_RUNTIME_METHODS=HEAPU8,UTF8ToString,wasmMemory
     -sEXPORTED_FUNCTIONS=_malloc,_free
     -sINCOMING_MODULE_JS_API=locateFile,print,printErr,onAbort,mainScriptUrlOrBlob
     -sFILESYSTEM=0

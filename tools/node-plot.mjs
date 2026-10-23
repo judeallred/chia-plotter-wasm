@@ -13,13 +13,17 @@ const M = await create({
   onAbort: (r) => console.error("[wasm abort]", r),
 });
 const big = bits === "64";
-// In memory64 builds pointers cross the JS boundary as BigInt.
-const ptr = (p) => (big ? Number(p) : p);
+// In memory64 builds pointers cross the JS boundary as BigInt. In wasm32 builds they are
+// signed i32, so pointers above 2 GB arrive negative and need >>> 0.
+const ptr = (p) => (big ? Number(p) : p >>> 0);
 const toPtr = (n) => (big ? BigInt(n) : n);
 
+// The heap can grow on another thread, which leaves M.HEAPU8 pointing at the old buffer.
+// Always build a fresh view.
+const heap = () => new Uint8Array(M.wasmMemory.buffer);
 const alloc = (bytes) => {
   const p = ptr(M._malloc(toPtr(bytes.length)));
-  M.HEAPU8.set(bytes, p);
+  heap().set(bytes, p);
   return p;
 };
 const plotId = Buffer.from(plotIdHex, "hex");
@@ -28,7 +32,7 @@ const pId = alloc(plotId), pMemo = alloc(memo);
 
 if (process.env.THREADS) M._pos2w_set_threads(+process.env.THREADS);
 const t0 = performance.now();
-const rc = M._pos2w_start(toPtr(pId), +k, +strength, 0, 0, toPtr(pMemo), memo.length, 0);
+const rc = M._pos2w_start(toPtr(pId), +k, +strength, 0, 0, toPtr(pMemo), memo.length, process.env.TESTNET ? 1 : 0);
 if (rc !== 0) throw new Error(`start failed ${rc}`);
 while (M._pos2w_status() === 1) {
   await new Promise((r) => setTimeout(r, 250));
@@ -45,11 +49,11 @@ for (;;) {
   const p = ptr(M._pos2w_next_chunk());
   if (!p) break;
   const len = M._pos2w_chunk_len();
-  await fh.write(M.HEAPU8.slice(p, p + len), 0, len, pos);
+  await fh.write(heap().slice(p, p + len), 0, len, pos);
   pos += len;
 }
 const h = ptr(M._pos2w_header());
-await fh.write(M.HEAPU8.slice(h, h + M._pos2w_header_len()), 0, M._pos2w_header_len(), 0);
+await fh.write(heap().slice(h, h + M._pos2w_header_len()), 0, M._pos2w_header_len(), 0);
 await fh.close();
 const t2 = performance.now();
 console.log(JSON.stringify({

@@ -43,14 +43,25 @@ What goes into a plot (mirrored in `keys/src/lib.rs`, checked against the Python
 5. `memo = pool_pk_or_contract_ph || farmer_pk || sk`, stored in the plot header.
 6. File name `plot-k{k}-{plot_id}.plot2`.
 
-Plotting is fully in memory. Native reference numbers on an M4 Pro (14 cores, 24 GB):
+Plotting is fully in memory. Times on an M4 Pro (14 cores, 24 GB), same plot ID and memo,
+all outputs byte identical (`tools/bench.sh`, browser numbers from the page):
 
-| k | file | peak RAM | native time | browser WASM time |
-| --- | --- | --- | --- | --- |
-| 22 | 12 MB | 0.26 GB | 1.0 s | 2.2 s |
-| 24 | 53 MB | 1.0 GB | 4 s | 8 to 9 s |
-| 26 | 230 MB | 2.2 GB | 40 to 48 s | 160 s (Node) |
-| 28 | 989 MB | 8.7 GB | 73 s (`create2`) | not yet |
+| k | file | peak RAM | `chia_rs` (create2) | native glue | WASM in Node | WASM in Chrome |
+| --- | --- | --- | --- | --- | --- | --- |
+| 20 | 3 MB | 75 MB | 0.9 s | 0.5 s | 1.0 s | |
+| 22 | 12 MB | 0.26 GB | 1.1 s | 1.4 s | 2.5 s | 2.2 s |
+| 24 | 53 MB | 1.0 GB | 8.0 s | 7.9 s | 7.9 s | about 8 s |
+| 26 | 230 MB | 2.2 GB | 56 s | 52 s | 180 s | 31 s |
+| 28 | 989 MB | 8.7 GB | 73 s | | | |
+
+Caveats: this machine was swapping during these runs (a Docker VM was holding about 16 GB),
+which hurts the k26 native and Node numbers. Chrome kept its memory resident and was fastest
+at k26. The native k28 `create2` run was done earlier with less pressure.
+
+Profiling (macOS `sample` on native k24) shows the plotter's threads idle about two thirds of
+the time: it forks and joins all threads for every match key, so serial sections and load
+imbalance dominate. Hashing is not the bottleneck: building natively without hardware AES
+(the code path WASM uses) gives the same time.
 
 ## Layout
 

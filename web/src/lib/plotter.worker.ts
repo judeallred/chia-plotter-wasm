@@ -10,7 +10,7 @@ import type { FromWorker, PlotJob, ToWorker } from "./protocol";
 declare const self: DedicatedWorkerGlobalScope;
 
 interface Pos2Module {
-  HEAPU8: Uint8Array;
+  wasmMemory: WebAssembly.Memory;
   _malloc(n: number | bigint): number | bigint;
   _free(p: number | bigint): void;
   UTF8ToString(p: number | bigint): string;
@@ -116,14 +116,19 @@ async function runPlot(job: PlotJob) {
   current = M;
   const big = variant === "64";
   const toPtr = (n: number) => (big ? BigInt(n) : n);
-  const fromPtr = (p: number | bigint) => Number(p);
+  // memory64 pointers arrive as BigInt. wasm32 pointers arrive as signed i32, so anything
+  // above 2 GB (k26 heaps get there) is negative unless converted with >>> 0.
+  const fromPtr = (p: number | bigint) => (typeof p === "bigint" ? Number(p) : p >>> 0);
 
   M._pos2w_reset();
   M._pos2w_set_threads(job.threads);
 
+  // The heap grows on the plot thread, which leaves Emscripten's HEAPU8 view on this
+  // thread pointing at the old, shorter buffer. Always build a fresh view.
+  const heap = () => new Uint8Array(M.wasmMemory.buffer);
   const alloc = (bytes: Uint8Array) => {
     const p = fromPtr(M._malloc(toPtr(bytes.length)));
-    M.HEAPU8.set(bytes, p);
+    heap().set(bytes, p);
     return p;
   };
   const pId = alloc(job.plotId);
@@ -176,7 +181,7 @@ async function runPlot(job: PlotJob) {
       if (!p) break;
       const len = M._pos2w_chunk_len();
       // slice() copies out of the shared WASM heap, which file APIs do not accept.
-      await writer.write(pos, M.HEAPU8.slice(p, p + len));
+      await writer.write(pos, heap().slice(p, p + len));
       pos += len;
       if (i % 16 === 0) {
         post({
@@ -187,7 +192,7 @@ async function runPlot(job: PlotJob) {
     }
     if (M._pos2w_status() < 0) throw new Error(M.UTF8ToString(M._pos2w_error()));
     const h = fromPtr(M._pos2w_header());
-    await writer.write(0, M.HEAPU8.slice(h, h + M._pos2w_header_len()));
+    await writer.write(0, heap().slice(h, h + M._pos2w_header_len()));
     file = await writer.close();
     bytes = pos;
   } catch (e) {

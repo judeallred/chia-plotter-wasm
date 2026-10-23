@@ -164,13 +164,14 @@ export async function start() {
     }
   });
 
-  const worker = new Worker(new URL("./plotter.worker.ts", import.meta.url), { type: "module" });
+  const makeWorker = () => new Worker(new URL("./plotter.worker.ts", import.meta.url), { type: "module" });
+  let worker = makeWorker();
   let running = false;
   let stopAfterCurrent = false;
   let wakeLock: { release(): Promise<void> } | null = null;
   // Plots kept in the origin private file system for download. Older ones are removed
   // once a newer plot finishes, by which time their download has long completed.
-  const opfsFiles: string[] = [];
+  const opfsFiles: { name: string; link: HTMLAnchorElement }[] = [];
 
   window.addEventListener("beforeunload", (e) => {
     if (running) e.preventDefault();
@@ -178,12 +179,23 @@ export async function start() {
 
   const runOne = (job: PlotJob) =>
     new Promise<{ ok: true; bytes: number; timings: Timings; file?: File } | { ok: false; reason: string }>((resolve) => {
+      const started = performance.now();
+      // A crash (for example running out of memory) leaves the WASM module unusable, so
+      // replace the worker before the next plot.
+      worker.onerror = (e) => {
+        e.preventDefault();
+        worker.terminate();
+        worker = makeWorker();
+        resolve({ ok: false, reason: `plotter crashed: ${e.message || "unknown error"}` });
+      };
       worker.onmessage = (ev: MessageEvent<FromWorker>) => {
         const m = ev.data;
         if (m.type === "progress") {
+          const elapsed = performance.now() - started;
           const pct = (m.fraction * 100).toFixed(1);
+          const eta = m.phase === "plotting" && m.fraction > 0.05 ? `, about ${fmtMs(elapsed / m.fraction - elapsed)} left` : "";
           barFill.style.width = `${100 * m.fraction}%`;
-          statusText.textContent = `${job.filename}: ${m.phase === "writing" ? "writing" : pct + "%"} (${m.detail})`;
+          statusText.textContent = `${job.filename}: ${m.phase === "writing" ? "writing" : pct + "%"} (${m.detail}), ${fmtMs(elapsed)} elapsed${eta}`;
         } else if (m.type === "done") {
           resolve({ ok: true, bytes: m.bytes, timings: m.timings, file: m.file });
         } else if (m.type === "cancelled") {
@@ -195,7 +207,8 @@ export async function start() {
       worker.postMessage({ type: "plot", job });
     });
 
-  const addHistory = (filename: string, bytes: number, t: Timings, file?: File) => {
+  const addHistory = (filename: string, bytes: number, t: Timings, file?: File): HTMLAnchorElement | null => {
+    let link: HTMLAnchorElement | null = null;
     const tr = document.createElement("tr");
     tr.innerHTML = `<td class="file"></td><td>${fmtBytes(bytes)}</td><td>${fmtMs(t.plotMs)}</td><td>${fmtMs(t.writeMs)}</td><td>${fmtMs(t.totalMs)}</td><td></td>`;
     tr.querySelector(".file")!.textContent = filename;
@@ -207,8 +220,12 @@ export async function start() {
       a.textContent = "download";
       tr.lastElementChild!.append(a);
       a.click();
+      link = a;
+    } else {
+      tr.lastElementChild!.textContent = "saved";
     }
     history.prepend(tr);
+    return link;
   };
 
   form.addEventListener("submit", async (ev) => {
@@ -238,6 +255,15 @@ export async function start() {
       sink = { kind: "dir", dir };
     }
 
+    if (sink.kind === "opfs") {
+      const { quota = 0, usage = 0 } = await navigator.storage.estimate();
+      const need = { 18: 1e6, 20: 3e6, 22: 13e6, 24: 54e6, 26: 231e6, 28: 990e6 }[s.k] ?? 1e9;
+      if (quota - usage < need * 2) {
+        formError.textContent = `Browser storage has ${fmtBytes(quota - usage)} free, which is not enough for this plot.`;
+        return;
+      }
+    }
+
     running = true;
     stopAfterCurrent = false;
     startBtn.disabled = true;
@@ -262,16 +288,23 @@ export async function start() {
         statusText.textContent = res.reason === "cancelled" ? "Stopped." : `Error: ${res.reason}`;
         break;
       }
-      addHistory(filename, res.bytes, res.timings, res.file);
-      if (sink.kind === "opfs") {
+      const link = addHistory(filename, res.bytes, res.timings, res.file);
+      if (sink.kind === "opfs" && link) {
         const root = await navigator.storage.getDirectory();
-        while (opfsFiles.length) await root.removeEntry(opfsFiles.shift()!).catch(() => {});
-        opfsFiles.push(filename);
+        for (const old of opfsFiles.splice(0)) {
+          await root.removeEntry(old.name).catch(() => {});
+          URL.revokeObjectURL(old.link.href);
+          old.link.replaceWith("downloaded");
+        }
+        opfsFiles.push({ name: filename, link });
       }
       statusText.textContent = `Finished ${filename}`;
       barFill.style.width = "100%";
     }
 
+    // WASM memory never shrinks, so drop the worker (and its multi GB heap) when idle.
+    worker.terminate();
+    worker = makeWorker();
     running = false;
     startBtn.disabled = false;
     stopBtn.disabled = true;
