@@ -14,7 +14,7 @@ for variant in 32 64; do
 done
 
 mkdir -p web/public/wasm
-cp core/build-wasm32/pos2w32.{js,wasm} core/build-wasm64/pos2w64.{js,wasm} web/public/wasm/
+cp core/build-wasm32/pos2w32.{js,wasm} core/build-wasm32/pos2v.{js,wasm} core/build-wasm64/pos2w64.{js,wasm} web/public/wasm/
 
 # blst needs a clang that can target wasm32. Homebrew's llvm works on macOS.
 llvm_bin="${LLVM_BIN:-$(brew --prefix llvm 2>/dev/null)/bin}"

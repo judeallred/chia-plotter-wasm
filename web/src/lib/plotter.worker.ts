@@ -150,6 +150,7 @@ async function runPlot(job: PlotJob) {
       fraction: M._pos2w_progress(),
       table,
       detail: `${phaseNames[M._pos2w_phase()] ?? "working"}${table ? ` table ${table}` : ""}`,
+      heapBytes: M.wasmMemory.buffer.byteLength,
     });
   }
   const status = M._pos2w_status();

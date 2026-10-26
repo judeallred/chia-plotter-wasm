@@ -102,6 +102,12 @@ import "../styles/app.css";
           </p>
         </fieldset>
 
+        <label>
+          Check each new plot
+          <input name="autoChecks" type="number" min="0" max="1000" value="10" />
+          <small>Challenges to run against each finished plot, like <code>chia plots check -n</code>. 0 turns checking off. Checks run alongside the next plot.</small>
+        </label>
+
         <div class="actions">
           <button type="submit" id="start">Start plotting</button>
           <button type="button" id="stop" class="danger" disabled>Stop</button>
@@ -116,11 +122,50 @@ import "../styles/app.css";
       </section>
 
       <section class="card">
+        <h2>Live stats</h2>
+        <div id="stats" class="stats"></div>
+        <p class="hint">Web pages cannot see free system memory, other apps, or disk space, so
+          this shows what the browser exposes.</p>
+      </section>
+
+      <section class="card">
         <h2>Finished plots</h2>
         <table id="history">
           <thead>
-            <tr><th>File</th><th>Size</th><th>Plot</th><th>Write</th><th>Total</th><th></th></tr>
+            <tr><th>File</th><th>Size</th><th>Plot</th><th>Write</th><th>Total</th><th>Check</th><th></th></tr>
           </thead>
+          <tbody></tbody>
+        </table>
+      </section>
+      <section class="card" id="validate">
+        <h2>Validate plots</h2>
+        <p class="hint">
+          Check existing <code>.plot2</code> files with the same steps as
+          <code>chia plots check</code>: look up proofs for each challenge, solve them, and
+          validate them. Also checks that the keys in the plot produce its plot ID. Files are
+          read in place in your browser. Nothing is uploaded.
+        </p>
+        <div class="row">
+          <label>
+            Challenges
+            <input id="v-challenges" type="number" min="1" max="1000" value="30" />
+            <small>Same as <code>chia plots check -n</code>. Default 30.</small>
+          </label>
+          <label>
+            Network
+            <select id="v-network">
+              <option value="auto" selected>auto detect</option>
+              <option value="mainnet">mainnet</option>
+              <option value="testnet">testnet</option>
+            </select>
+          </label>
+        </div>
+        <div class="actions">
+          <label class="button secondary">Choose plot files…<input id="v-files" type="file" accept=".plot2" multiple hidden /></label>
+          <button type="button" id="v-dir" class="secondary">Check a folder…</button>
+        </div>
+        <table id="v-results">
+          <thead><tr><th>File</th><th>k</th><th>Result</th><th>Details</th></tr></thead>
           <tbody></tbody>
         </table>
       </section>

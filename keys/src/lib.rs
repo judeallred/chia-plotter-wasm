@@ -151,3 +151,74 @@ pub fn check_public_key(hex_str: &str) -> String {
 pub fn check_address(address: &str) -> String {
     decode_address(address).err().unwrap_or_default()
 }
+
+#[wasm_bindgen]
+pub struct MemoInfo {
+    farmer_public_key: String,
+    pool_public_key: String,
+    pool_contract_address: String,
+    plot_id_hex: String,
+}
+
+#[wasm_bindgen]
+impl MemoInfo {
+    #[wasm_bindgen(getter)]
+    pub fn farmer_public_key(&self) -> String {
+        self.farmer_public_key.clone()
+    }
+    /// Empty when the plot uses a pool contract.
+    #[wasm_bindgen(getter)]
+    pub fn pool_public_key(&self) -> String {
+        self.pool_public_key.clone()
+    }
+    /// Empty when the plot uses a pool public key.
+    #[wasm_bindgen(getter)]
+    pub fn pool_contract_address(&self) -> String {
+        self.pool_contract_address.clone()
+    }
+    /// The plot ID implied by the memo keys. It must equal the ID in the plot header.
+    #[wasm_bindgen(getter)]
+    pub fn plot_id_hex(&self) -> String {
+        self.plot_id_hex.clone()
+    }
+}
+
+/// Decodes a plot memo (pool key or contract puzzle hash, farmer key, plot secret key) and
+/// recomputes the plot ID the same way `create_v2_plots()` does. `address_prefix` is "xch"
+/// or "txch".
+#[wasm_bindgen]
+pub fn inspect_memo(memo: &[u8], strength: u8, plot_index: u16, meta_group: u8, address_prefix: &str) -> Result<MemoInfo, JsError> {
+    let (pool, rest) = match memo.len() {
+        128 => {
+            let pk: [u8; 48] = memo[..48].try_into().unwrap();
+            let pk = G1Element::from_bytes(&pk).map_err(|e| JsError::new(&format!("pool key in memo: {e}")))?;
+            (Pool::PublicKey(pk), &memo[48..])
+        }
+        112 => (Pool::ContractPuzzleHash(memo[..32].try_into().unwrap()), &memo[32..]),
+        n => return Err(JsError::new(&format!("memo is {n} bytes, expected 112 or 128"))),
+    };
+    let farmer_bytes: [u8; 48] = rest[..48].try_into().unwrap();
+    let farmer = G1Element::from_bytes(&farmer_bytes).map_err(|e| JsError::new(&format!("farmer key in memo: {e}")))?;
+    let sk_bytes: [u8; 32] = rest[48..80].try_into().unwrap();
+    let sk = SecretKey::from_bytes(&sk_bytes).map_err(|e| JsError::new(&format!("plot secret key in memo: {e}")))?;
+
+    let include_taproot = matches!(pool, Pool::ContractPuzzleHash(_));
+    let local_pk = master_sk_to_local_sk(&sk).public_key();
+    let plot_pk = generate_plot_public_key(&local_pk, &farmer, include_taproot);
+    let plot_id = compute_plot_id_v2(strength, &plot_pk, &pool, plot_index, meta_group);
+
+    let (pool_public_key, pool_contract_address) = match &pool {
+        Pool::PublicKey(pk) => (hex::encode(pk.to_bytes()), String::new()),
+        Pool::ContractPuzzleHash(ph) => {
+            let hrp = bech32::Hrp::parse(address_prefix).map_err(|e| JsError::new(&e.to_string()))?;
+            let addr = bech32::encode::<bech32::Bech32m>(hrp, ph).map_err(|e| JsError::new(&e.to_string()))?;
+            (String::new(), addr)
+        }
+    };
+    Ok(MemoInfo {
+        farmer_public_key: hex::encode(farmer.to_bytes()),
+        pool_public_key,
+        pool_contract_address,
+        plot_id_hex: hex::encode(plot_id),
+    })
+}

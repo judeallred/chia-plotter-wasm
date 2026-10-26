@@ -114,5 +114,14 @@ vendor/chia-blockchain/.venv/bin/python -I tools/check_plot.py -n 50 \
   --reference core/build-native/pos2w_cli ~/Downloads/plot-k22-*.plot2
 ```
 
+In the browser: the page checks every new plot (setting "Check each new plot", default 10
+challenges) and has a "Validate plots" section for existing files. Both use `core/pos2v`,
+pos2-chip's prover, solver and validator compiled to WASM, with the same steps and the same
+cap of 10 qualities per challenge as chia_rs. Its proof counts match `tools/check_plot.py`
+exactly (`tools/node-validate.mjs` runs it in Node). It also recomputes the plot ID from the
+keys in the memo, checks the file name, and compares the farmer key with your settings.
+Testnet plots are detected automatically. Like `chia plots check`, a damaged chunk can still
+pass with fewer proofs, so the byte comparison above remains the strongest test.
+
 Plots made by the WASM build (Node and browser) have been checked to be byte identical to
 `chia_rs.create_v2_plot` given the same plot ID and memo.

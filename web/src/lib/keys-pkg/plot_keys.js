@@ -68,6 +68,89 @@ export class DerivedPlot {
 }
 if (Symbol.dispose) DerivedPlot.prototype[Symbol.dispose] = DerivedPlot.prototype.free;
 
+export class MemoInfo {
+    static __wrap(ptr) {
+        const obj = Object.create(MemoInfo.prototype);
+        obj.__wbg_ptr = ptr;
+        MemoInfoFinalization.register(obj, obj.__wbg_ptr, obj);
+        return obj;
+    }
+    __destroy_into_raw() {
+        const ptr = this.__wbg_ptr;
+        this.__wbg_ptr = 0;
+        MemoInfoFinalization.unregister(this);
+        return ptr;
+    }
+    free() {
+        const ptr = this.__destroy_into_raw();
+        wasm.__wbg_memoinfo_free(ptr, 0);
+    }
+    /**
+     * @returns {string}
+     */
+    get farmer_public_key() {
+        let deferred1_0;
+        let deferred1_1;
+        try {
+            const ret = wasm.memoinfo_farmer_public_key(this.__wbg_ptr);
+            deferred1_0 = ret[0];
+            deferred1_1 = ret[1];
+            return getStringFromWasm0(ret[0], ret[1]);
+        } finally {
+            wasm.__wbindgen_free(deferred1_0, deferred1_1, 1);
+        }
+    }
+    /**
+     * The plot ID implied by the memo keys. It must equal the ID in the plot header.
+     * @returns {string}
+     */
+    get plot_id_hex() {
+        let deferred1_0;
+        let deferred1_1;
+        try {
+            const ret = wasm.memoinfo_plot_id_hex(this.__wbg_ptr);
+            deferred1_0 = ret[0];
+            deferred1_1 = ret[1];
+            return getStringFromWasm0(ret[0], ret[1]);
+        } finally {
+            wasm.__wbindgen_free(deferred1_0, deferred1_1, 1);
+        }
+    }
+    /**
+     * Empty when the plot uses a pool public key.
+     * @returns {string}
+     */
+    get pool_contract_address() {
+        let deferred1_0;
+        let deferred1_1;
+        try {
+            const ret = wasm.memoinfo_pool_contract_address(this.__wbg_ptr);
+            deferred1_0 = ret[0];
+            deferred1_1 = ret[1];
+            return getStringFromWasm0(ret[0], ret[1]);
+        } finally {
+            wasm.__wbindgen_free(deferred1_0, deferred1_1, 1);
+        }
+    }
+    /**
+     * Empty when the plot uses a pool contract.
+     * @returns {string}
+     */
+    get pool_public_key() {
+        let deferred1_0;
+        let deferred1_1;
+        try {
+            const ret = wasm.memoinfo_pool_public_key(this.__wbg_ptr);
+            deferred1_0 = ret[0];
+            deferred1_1 = ret[1];
+            return getStringFromWasm0(ret[0], ret[1]);
+        } finally {
+            wasm.__wbindgen_free(deferred1_0, deferred1_1, 1);
+        }
+    }
+}
+if (Symbol.dispose) MemoInfo.prototype[Symbol.dispose] = MemoInfo.prototype.free;
+
 /**
  * Validates a pool contract address. Returns an empty string when valid.
  * @param {string} address
@@ -135,6 +218,29 @@ export function derive(seed, farmer_public_key, pool_public_key, pool_contract_a
     }
     return DerivedPlot.__wrap(ret[0]);
 }
+
+/**
+ * Decodes a plot memo (pool key or contract puzzle hash, farmer key, plot secret key) and
+ * recomputes the plot ID the same way `create_v2_plots()` does. `address_prefix` is "xch"
+ * or "txch".
+ * @param {Uint8Array} memo
+ * @param {number} strength
+ * @param {number} plot_index
+ * @param {number} meta_group
+ * @param {string} address_prefix
+ * @returns {MemoInfo}
+ */
+export function inspect_memo(memo, strength, plot_index, meta_group, address_prefix) {
+    const ptr0 = passArray8ToWasm0(memo, wasm.__wbindgen_malloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ptr1 = passStringToWasm0(address_prefix, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len1 = WASM_VECTOR_LEN;
+    const ret = wasm.inspect_memo(ptr0, len0, strength, plot_index, meta_group, ptr1, len1);
+    if (ret[2]) {
+        throw takeFromExternrefTable0(ret[1]);
+    }
+    return MemoInfo.__wrap(ret[0]);
+}
 function __wbg_get_imports() {
     const import0 = {
         __proto__: null,
@@ -164,6 +270,9 @@ function __wbg_get_imports() {
 const DerivedPlotFinalization = (typeof FinalizationRegistry === 'undefined')
     ? { register: () => {}, unregister: () => {} }
     : new FinalizationRegistry(ptr => wasm.__wbg_derivedplot_free(ptr, 1));
+const MemoInfoFinalization = (typeof FinalizationRegistry === 'undefined')
+    ? { register: () => {}, unregister: () => {} }
+    : new FinalizationRegistry(ptr => wasm.__wbg_memoinfo_free(ptr, 1));
 
 function getArrayU8FromWasm0(ptr, len) {
     ptr = ptr >>> 0;

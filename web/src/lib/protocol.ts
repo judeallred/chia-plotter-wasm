@@ -32,7 +32,44 @@ export interface Timings {
 export type Phase = "loading" | "plotting" | "writing";
 
 export type FromWorker =
-  | { type: "progress"; phase: Phase; fraction: number; table: number; detail: string }
+  | { type: "progress"; phase: Phase; fraction: number; table: number; detail: string; heapBytes?: number }
   | { type: "done"; filename: string; bytes: number; timings: Timings; file?: File }
   | { type: "cancelled" }
   | { type: "error"; message: string };
+
+// Messages between the page and the validator worker.
+
+export type Network = "mainnet" | "testnet";
+
+export interface PlotHeader {
+  plotId: Uint8Array;
+  k: number;
+  strength: number;
+  index: number;
+  metaGroup: number;
+  memo: Uint8Array;
+}
+
+export interface ValidateRequest {
+  type: "validate";
+  id: number;
+  file: File;
+  challenges: number;
+  // "auto" tries mainnet first and switches to testnet if mainnet proofs do not validate.
+  network: Network | "auto";
+}
+
+export type FromValidator =
+  | { type: "header"; id: number; header: PlotHeader }
+  | { type: "progress"; id: number; done: number; total: number; found: number; valid: number }
+  | {
+      type: "result";
+      id: number;
+      network: Network;
+      challenges: number;
+      found: number;
+      solved: number;
+      valid: number;
+      ms: number;
+      error?: string;
+    };

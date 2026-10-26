@@ -55,6 +55,33 @@ if(EMSCRIPTEN)
     -sINCOMING_MODULE_JS_API=locateFile,print,printErr,onAbort,mainScriptUrlOrBlob
     -sFILESYSTEM=0
   )
+
+  # Validator: prover, solver and validator, reading plots through the Emscripten file
+  # system. WORKERFS reads File objects lazily in the browser, NODEFS is for tests.
+  if(NOT POS2W_MEMORY64)
+    add_executable(pos2v src/pos2v.cpp)
+    target_link_libraries(pos2v PRIVATE pos2w_core)
+    target_link_options(pos2v PRIVATE
+      ${common_flags}
+      -lworkerfs.js
+      -lnodefs.js
+      -sFORCE_FILESYSTEM=1
+      -sMODULARIZE=1
+      -sEXPORT_ES6=1
+      -sEXPORT_NAME=createPos2v
+      -sENVIRONMENT=worker,node
+      -sALLOW_MEMORY_GROWTH=1
+      -sINITIAL_MEMORY=64MB
+      -sMAXIMUM_MEMORY=4GB
+      -sSTACK_SIZE=1MB
+      -sDEFAULT_PTHREAD_STACK_SIZE=1MB
+      -sPTHREAD_POOL_SIZE=navigator.hardwareConcurrency+2
+      -sPTHREAD_POOL_SIZE_STRICT=0
+      -sEXPORTED_RUNTIME_METHODS=FS,WORKERFS,NODEFS,UTF8ToString,stringToUTF8,lengthBytesUTF8,wasmMemory
+      -sEXPORTED_FUNCTIONS=_malloc,_free
+      -sINCOMING_MODULE_JS_API=locateFile,print,printErr,onAbort,mainScriptUrlOrBlob
+    )
+  endif()
 else()
   find_package(Threads REQUIRED)
   add_executable(pos2w_cli src/pos2w_cli.cpp)

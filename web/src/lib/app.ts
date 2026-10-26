@@ -3,6 +3,8 @@
 import initKeys, { check_address, check_public_key, derive } from "./keys-pkg/plot_keys.js";
 import type { FromWorker, PlotJob, Sink, Timings } from "./protocol";
 import { loadDir, saveDir } from "./saved-dir";
+import { startStats, type PlotStatsSource } from "./stats";
+import { Validator, type Report } from "./validate";
 
 const STORAGE_KEY = "pos2-plotter-settings";
 
@@ -17,6 +19,7 @@ interface Settings {
   threads: number;
   network: "mainnet" | "testnet";
   output: "dir" | "download";
+  autoChecks: number;
 }
 
 const $ = <T extends Element>(sel: string) => document.querySelector(sel) as T;
@@ -66,6 +69,7 @@ function readSettings(form: HTMLFormElement): Settings {
     threads: Number(s("threads")),
     network: s("network") === "testnet" ? "testnet" : "mainnet",
     output: s("output") === "dir" ? "dir" : "download",
+    autoChecks: Number(s("autoChecks")),
   };
 }
 
@@ -175,12 +179,15 @@ export async function start() {
 
   const makeWorker = () => new Worker(new URL("./plotter.worker.ts", import.meta.url), { type: "module" });
   let worker = makeWorker();
+  const statsSource: PlotStatsSource = { plotterHeapBytes: 0, finished: [] };
+  startStats($<HTMLElement>("#stats"), statsSource);
+  const validator = new Validator();
   let running = false;
   let stopAfterCurrent = false;
   let wakeLock: { release(): Promise<void> } | null = null;
   // Plots kept in the origin private file system for download. Older ones are removed
   // once a newer plot finishes, by which time their download has long completed.
-  const opfsFiles: { name: string; link: HTMLAnchorElement }[] = [];
+  const opfsFiles: { name: string; link: HTMLAnchorElement; checked: Promise<unknown> }[] = [];
 
   window.addEventListener("beforeunload", (e) => {
     if (running) e.preventDefault();
@@ -200,6 +207,7 @@ export async function start() {
       worker.onmessage = (ev: MessageEvent<FromWorker>) => {
         const m = ev.data;
         if (m.type === "progress") {
+          if (m.heapBytes) statsSource.plotterHeapBytes = m.heapBytes;
           const elapsed = performance.now() - started;
           const pct = (m.fraction * 100).toFixed(1);
           const eta = m.phase === "plotting" && m.fraction > 0.05 ? `, about ${fmtMs(elapsed / m.fraction - elapsed)} left` : "";
@@ -216,10 +224,10 @@ export async function start() {
       worker.postMessage({ type: "plot", job });
     });
 
-  const addHistory = (filename: string, bytes: number, t: Timings, file?: File): HTMLAnchorElement | null => {
+  const addHistory = (filename: string, bytes: number, t: Timings, file?: File) => {
     let link: HTMLAnchorElement | null = null;
     const tr = document.createElement("tr");
-    tr.innerHTML = `<td class="file"></td><td>${fmtBytes(bytes)}</td><td>${fmtMs(t.plotMs)}</td><td>${fmtMs(t.writeMs)}</td><td>${fmtMs(t.totalMs)}</td><td></td>`;
+    tr.innerHTML = `<td class="file"></td><td>${fmtBytes(bytes)}</td><td>${fmtMs(t.plotMs)}</td><td>${fmtMs(t.writeMs)}</td><td>${fmtMs(t.totalMs)}</td><td class="check">off</td><td></td>`;
     tr.querySelector(".file")!.textContent = filename;
     tr.title = `Xs ${fmtMs(t.tablesMs[0])}, T1 ${fmtMs(t.tablesMs[1])}, T2 ${fmtMs(t.tablesMs[2])}, T3 ${fmtMs(t.tablesMs[3])}`;
     if (file) {
@@ -234,7 +242,7 @@ export async function start() {
       tr.lastElementChild!.textContent = "saved";
     }
     history.prepend(tr);
-    return link;
+    return { link, checkCell: tr.querySelector<HTMLElement>(".check")! };
   };
 
   form.addEventListener("submit", async (ev) => {
@@ -297,15 +305,30 @@ export async function start() {
         statusText.textContent = res.reason === "cancelled" ? "Stopped." : `Error: ${res.reason}`;
         break;
       }
-      const link = addHistory(filename, res.bytes, res.timings, res.file);
+      statsSource.finished.push({ bytes: res.bytes, ms: res.timings.totalMs });
+      const { link, checkCell } = addHistory(filename, res.bytes, res.timings, res.file);
+      let checked: Promise<unknown> = Promise.resolve();
+      if (s.autoChecks > 0) {
+        // Read the plot back from where it was saved, so the check also covers the write.
+        const file = res.file ?? (sink.kind === "dir" ? await sink.dir.getFileHandle(filename).then((h) => h.getFile()) : undefined);
+        if (file) {
+          checkCell.textContent = "queued";
+          checked = validator
+            .check(file, { challenges: s.autoChecks, network: s.network, expectFarmerKey: s.farmerKey }, (p) => {
+              checkCell.textContent = `${p.done}/${p.total}…`;
+            })
+            .then((r) => renderCheckCell(checkCell, r));
+        }
+      }
       if (sink.kind === "opfs" && link) {
         const root = await navigator.storage.getDirectory();
         for (const old of opfsFiles.splice(0)) {
+          await old.checked;
           await root.removeEntry(old.name).catch(() => {});
           URL.revokeObjectURL(old.link.href);
           old.link.replaceWith("downloaded");
         }
-        opfsFiles.push({ name: filename, link });
+        opfsFiles.push({ name: filename, link, checked });
       }
       statusText.textContent = `Finished ${filename}`;
       barFill.style.width = "100%";
@@ -314,6 +337,7 @@ export async function start() {
     // WASM memory never shrinks, so drop the worker (and its multi GB heap) when idle.
     worker.terminate();
     worker = makeWorker();
+    statsSource.plotterHeapBytes = 0;
     running = false;
     startBtn.disabled = false;
     stopBtn.disabled = true;
@@ -326,6 +350,8 @@ export async function start() {
     statusText.textContent = "Stopping…";
   });
 
+  setupValidateSection(validator, () => readSettings(form).farmerKey, caps.dirPicker);
+
   // Remove plots left in browser storage by an earlier visit.
   if (caps.opfs) {
     const root = await navigator.storage.getDirectory();
@@ -333,4 +359,73 @@ export async function start() {
       if (name.endsWith(".plot2")) await root.removeEntry(name).catch(() => {});
     }
   }
+}
+
+function renderCheckCell(cell: HTMLElement, r: Report) {
+  const proofs = r.checks.find((c) => c.name === "Proofs");
+  cell.innerHTML = r.ok ? `<span class="ok">✓</span> ` : `<span class="fail">✗</span> `;
+  cell.append(proofs?.detail.replace(/ over .*/, "") ?? "");
+  cell.title = r.checks.map((c) => `${c.ok ? "✓" : c.warn ? "!" : "✗"} ${c.name}: ${c.detail}`).join("\n");
+}
+
+function escapeHtml(t: string) {
+  return t.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]!);
+}
+
+function setupValidateSection(validator: Validator, farmerKey: () => string, dirPicker: boolean) {
+  const input = $<HTMLInputElement>("#v-files");
+  const dirBtn = $<HTMLButtonElement>("#v-dir");
+  const tbody = $<HTMLTableSectionElement>("#v-results tbody");
+  if (!dirPicker) dirBtn.hidden = true;
+
+  const run = async (files: File[]) => {
+    const challenges = Math.max(1, Number($<HTMLInputElement>("#v-challenges").value) || 30);
+    const network = $<HTMLSelectElement>("#v-network").value as "auto" | "mainnet" | "testnet";
+    for (const file of files) {
+      const tr = document.createElement("tr");
+      tr.innerHTML = `<td class="file"></td><td>…</td><td>queued</td><td></td>`;
+      tr.cells[0].textContent = file.name;
+      tbody.prepend(tr);
+      validator
+        .check(file, { challenges, network, expectFarmerKey: farmerKey() || undefined }, (p) => {
+          tr.cells[2].textContent = `${p.done}/${p.total} challenges, ${p.valid}/${p.found} proofs valid`;
+        })
+        .then((r) => {
+          tr.cells[1].textContent = r.header ? String(r.header.k) : "";
+          tr.cells[2].innerHTML = r.ok
+            ? `<span class="ok">✓ valid</span> <small>${(r.ms / 1000).toFixed(1)} s</small>`
+            : `<span class="fail">✗ failed</span>`;
+          const items = r.checks
+            .map((c) => `<li class="${c.ok ? "ok" : c.warn ? "warn" : "fail"}">${c.name}: ${escapeHtml(c.detail)}</li>`)
+            .join("");
+          const meta = [
+            r.header ? `strength ${r.header.strength}` : "",
+            r.farmerKey ? `farmer ${r.farmerKey.slice(0, 12)}…` : "",
+            r.pool ? `pool ${r.pool.length > 70 ? r.pool.slice(0, 12) + "…" : r.pool}` : "",
+          ].filter(Boolean).join(", ");
+          tr.cells[3].innerHTML = `<ul class="checks">${items}</ul><small>${escapeHtml(meta)}</small>`;
+        });
+    }
+  };
+
+  input.addEventListener("change", () => {
+    run(Array.from(input.files ?? []));
+    input.value = "";
+  });
+  dirBtn.addEventListener("click", async () => {
+    try {
+      const d = await (window as unknown as { showDirectoryPicker(o: object): Promise<FileSystemDirectoryHandle> })
+        .showDirectoryPicker({ id: "plots", mode: "read" });
+      const files: File[] = [];
+      for await (const entry of (d as unknown as { values(): AsyncIterable<FileSystemHandle> }).values()) {
+        if (entry.kind === "file" && entry.name.endsWith(".plot2")) {
+          files.push(await (entry as FileSystemFileHandle).getFile());
+        }
+      }
+      files.sort((a, b) => a.name.localeCompare(b.name));
+      run(files);
+    } catch {
+      // Picker closed.
+    }
+  });
 }
