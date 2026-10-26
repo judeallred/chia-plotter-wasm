@@ -93,6 +93,13 @@ import "../styles/app.css";
           <label class="inline"><input type="radio" name="output" value="dir" /> Save into a folder <small id="dir-name"></small></label>
           <label class="inline"><input type="radio" name="output" value="download" /> Download each plot</label>
           <button type="button" id="pick-dir" class="secondary">Choose folder…</button>
+          <p class="hint" id="dir-hint">
+            Use a folder just for plots, for example a <code>plots</code> folder on the drive you
+            farm from. Chrome won't open top level folders such as your home folder, Desktop,
+            Documents, or Downloads, or any system folder, but folders inside them are fine. Use
+            <b>New Folder</b> in the picker to make one. Then tell your harvester about it with
+            <code>chia plots add -d &lt;folder&gt;</code>.
+          </p>
         </fieldset>
 
         <div class="actions">

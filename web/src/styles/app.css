@@ -205,3 +205,9 @@ code {
 [hidden] {
   display: none !important;
 }
+
+.hint {
+  color: var(--muted);
+  font-size: 0.85rem;
+  margin: 8px 0 4px;
+}

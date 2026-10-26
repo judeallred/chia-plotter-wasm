@@ -2,6 +2,7 @@
 
 import initKeys, { check_address, check_public_key, derive } from "./keys-pkg/plot_keys.js";
 import type { FromWorker, PlotJob, Sink, Timings } from "./protocol";
+import { loadDir, saveDir } from "./saved-dir";
 
 const STORAGE_KEY = "pos2-plotter-settings";
 
@@ -138,6 +139,7 @@ export async function start() {
     form.querySelector<HTMLInputElement>('[name="output"][value="dir"]')!.disabled = true;
     applySettings(form, { output: "download" });
     pickBtn.hidden = true;
+    $<HTMLElement>("#dir-hint").hidden = true;
   }
 
   const syncPoolMode = () => {
@@ -152,15 +154,22 @@ export async function start() {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(readSettings(form)));
   });
 
-  let dir: FileSystemDirectoryHandle | null = null;
+  let dir: FileSystemDirectoryHandle | null = caps.dirPicker ? await loadDir() : null;
+  const showDir = () => {
+    $("#dir-name").textContent = dir ? `(${dir.name})` : "";
+    pickBtn.textContent = dir ? "Change folder…" : "Choose folder…";
+  };
+  showDir();
   pickBtn.addEventListener("click", async () => {
     try {
       dir = await (window as unknown as { showDirectoryPicker(o: object): Promise<FileSystemDirectoryHandle> })
-        .showDirectoryPicker({ id: "plots", mode: "readwrite" });
-      $("#dir-name").textContent = `(${dir.name})`;
+        .showDirectoryPicker({ id: "plots", mode: "readwrite", startIn: dir ?? "documents" });
+      await saveDir(dir);
+      showDir();
+      formError.textContent = "";
       applySettings(form, { output: "dir" });
     } catch {
-      // User closed the picker.
+      // User closed the picker, or picked a folder Chrome refuses and then cancelled.
     }
   });
 
