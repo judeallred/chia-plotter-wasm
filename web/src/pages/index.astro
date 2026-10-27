@@ -115,8 +115,7 @@ import "../styles/app.css";
               </tbody>
             </table>
             <p>
-              These are today's rates. Chia has <a href="https://github.com/Chia-Network/chips/pull/161" target="_blank" rel="noopener">scheduled</a>
-              cuts to the base filter (proposed in CHIP-49: the first 6 years after the fork, then
+              These are today's rates. Chia has <a href="https://github.com/Chia-Network/chips/pull/161" target="_blank" rel="noopener">scheduled</a> cuts to the base filter (proposed in CHIP-49: the first 6 years after the fork, then
               every 3 years), which make every strength pass more often, so higher strengths keep
               drives quieter for longer. CHIP-49 also plans to raise the minimum strength later
               (not for 10 or more years, with months of warning), and plots at the old minimum then
@@ -127,12 +126,10 @@ import "../styles/app.css";
             </p>
             <h3>What the meta group is</h3>
             <p>
-              Think of it as a sub-group. Chia's <a href="https://github.com/Chia-Network/chips/pull/161" target="_blank" rel="noopener">CHIP-49</a>
-              nests three levels: a <b>group ID</b> (one plot key, strength and pool) holds up to 256
+              Think of it as a sub-group. Chia's <a href="https://github.com/Chia-Network/chips/pull/161" target="_blank" rel="noopener">CHIP-49</a> nests three levels: a <b>group ID</b> (one plot key, strength and pool) holds up to 256
               <b>meta groups</b>, and each meta group holds up to 65,536 plots by <b>plot index</b>.
               Plots in the same group ID and meta group pass the filter together, which is what this
-              page calls a plot group. The name meta group is the protocol's own term
-              (<code>meta_group</code>), and the CHIPs do not explain the choice of word.
+              page calls a plot group.
             </p>
             <p>
               Signage points are grouped into windows of 16, and a group passes at most once per
