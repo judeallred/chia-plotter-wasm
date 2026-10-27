@@ -255,8 +255,12 @@ export async function start() {
   }
   // Folder controls only matter when saving into a folder.
   const dirPanel = $<HTMLElement>("#dir-panel");
+  const groupFoldersNote = $<HTMLElement>("#group-folders-note");
   const syncOutput = () => {
-    dirPanel.hidden = !caps.dirPicker || readSettings(form).output !== "dir";
+    const s = readSettings(form);
+    dirPanel.hidden = !caps.dirPicker || s.output !== "dir";
+    // Always shown so plot groups are easy to discover, but only used with groups.
+    groupFoldersNote.textContent = s.groupKeys === "none" ? "Used with plot groups, see Plot groups above." : "";
   };
   syncOutput();
   form.addEventListener("change", syncOutput);
