@@ -11,6 +11,8 @@ interface Battery {
 
 export interface PlotStatsSource {
   plotterHeapBytes: number;
+  // Largest plotter heap seen this session. WASM memory only grows, so this is the high water mark.
+  peakHeapBytes: number;
   finished: { bytes: number; ms: number }[];
 }
 
@@ -79,7 +81,8 @@ export function startStats(el: HTMLElement, source: PlotStatsSource) {
   }).catch(() => {});
 
   const tick = async () => {
-    set("plotter", `Plotter heap <b>${source.plotterHeapBytes ? fmtBytes(source.plotterHeapBytes) : "idle"}</b>`, false, "WebAssembly memory held by the plotter. It is released when plotting stops.");
+    const peak = source.peakHeapBytes ? `, peak ${fmtBytes(source.peakHeapBytes)}` : "";
+    set("plotter", `Plotter heap <b>${source.plotterHeapBytes ? fmtBytes(source.plotterHeapBytes) : "idle"}</b>${peak}`, false, "WebAssembly memory held by the plotter. It is released when plotting stops.");
 
     // Memory for this whole page, including workers and WASM. Needs cross origin isolation.
     const measure = (performance as { measureUserAgentSpecificMemory?: () => Promise<{ bytes: number }> }).measureUserAgentSpecificMemory;

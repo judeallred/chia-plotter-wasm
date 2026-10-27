@@ -160,7 +160,11 @@ async function runPlot(job: PlotJob) {
     return;
   }
   if (status !== Status.plotted) {
-    const message = M.UTF8ToString(M._pos2w_error()) || `plotter failed (status ${status})`;
+    let message = M.UTF8ToString(fromPtr(M._pos2w_error())) || `plotter failed (status ${status})`;
+    if (/bad_alloc|allocation failed/i.test(message)) {
+      const gb = (M.wasmMemory.buffer.byteLength / 1e9).toFixed(1);
+      message = `ran out of memory with ${gb} GB in use. k${job.k} needs about ${job.k >= 28 ? "11" : "3"} GB for the plotter. Close other apps or tabs and try again.`;
+    }
     M._pos2w_reset();
     throw new Error(message);
   }
@@ -171,7 +175,7 @@ async function runPlot(job: PlotJob) {
   let bytes = 0;
   try {
     const headerSize = M._pos2w_begin_write();
-    if (headerSize < 0) throw new Error(M.UTF8ToString(M._pos2w_error()) || "failed to prepare plot");
+    if (headerSize < 0) throw new Error(M.UTF8ToString(fromPtr(M._pos2w_error())) || "failed to prepare plot");
     const numChunks = M._pos2w_num_chunks();
     // Reserve the header. It is rewritten with the real chunk offsets at the end.
     await writer.write(0, new Uint8Array(headerSize));
@@ -188,10 +192,11 @@ async function runPlot(job: PlotJob) {
         post({
           type: "progress", phase: "writing", fraction: i / numChunks, table: 0,
           detail: `writing chunk ${i + 1} of ${numChunks}`,
+          heapBytes: M.wasmMemory.buffer.byteLength,
         });
       }
     }
-    if (M._pos2w_status() < 0) throw new Error(M.UTF8ToString(M._pos2w_error()));
+    if (M._pos2w_status() < 0) throw new Error(M.UTF8ToString(fromPtr(M._pos2w_error())));
     const h = fromPtr(M._pos2w_header());
     await writer.write(0, heap().slice(h, h + M._pos2w_header_len()));
     file = await writer.close();

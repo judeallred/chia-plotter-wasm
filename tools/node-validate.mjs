@@ -32,7 +32,7 @@ for (const file of files) {
   const pPath = cstr("/mnt/" + path.basename(file));
   const pId = alloc(plotId);
   const pCh = M._malloc(32) >>> 0;
-  let found = 0, valid = 0;
+  let found = 0, valid = 0, proveMs = 0, solveMs = 0;
   const t0 = performance.now();
   for (let i = 0; i < n; i++) {
     const idx = Buffer.alloc(32);
@@ -44,12 +44,14 @@ for (const file of files) {
       break;
     }
     found += M._pos2v_found();
+    proveMs += M._pos2v_prove_ms();
+    solveMs += M._pos2v_solve_ms();
     valid += M._pos2v_valid();
   }
   M.FS.unmount("/mnt");
   [pPath, pId, pCh].forEach((p) => M._free(p));
   const ok = found > 0 && found === valid;
   failed ||= !ok;
-  console.log(`${path.basename(file)}: k=${k} strength=${strength} proofs ${valid}/${found} valid over ${n} challenges (${((performance.now() - t0) / 1000).toFixed(1)}s) ${ok ? "OK" : "FAILED"}`);
+  console.log(`${path.basename(file)}: k=${k} strength=${strength} proofs ${valid}/${found} valid over ${n} challenges (${((performance.now() - t0) / 1000).toFixed(1)}s, prove ${(proveMs / 1000).toFixed(1)}s, solve ${(solveMs / 1000).toFixed(1)}s) ${ok ? "OK" : "FAILED"}`);
 }
 process.exit(failed ? 1 : 0);

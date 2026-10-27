@@ -66,7 +66,7 @@ int main(int argc, char** argv)
     auto t2 = std::chrono::steady_clock::now();
 
     auto ms = [](auto a, auto b) { return std::chrono::duration<double, std::milli>(b - a).count(); };
-    std::printf("plot_ms=%.0f write_ms=%.0f xs_ms=%.0f t1_ms=%.0f t2_ms=%.0f t3_ms=%.0f\n",
+    std::printf("layout_bytes=%.0f plot_ms=%.0f write_ms=%.0f xs_ms=%.0f t1_ms=%.0f t2_ms=%.0f t3_ms=%.0f\n", pos2w_layout_bytes(),
         ms(t0, t1), ms(t1, t2), pos2w_timing_ms(0), pos2w_timing_ms(1), pos2w_timing_ms(2),
         pos2w_timing_ms(3));
 

@@ -4,8 +4,8 @@ A browser plotter for Chia Proof of Space v2 (`.plot2`) plots. The pos2-chip plo
 compiled to WebAssembly with threads, keys are derived in the browser with `chia-bls`, and
 the finished plot is written straight into a folder you pick, or downloaded.
 
-Status: alpha. k18 to k26 work in the browser and produce plots that are byte for byte
-identical to `chia plots create2`. k28, the size the network actually uses, is next.
+Status: alpha. k18 to k28 work in the browser. A k28 plot made in Chrome passes
+`chia plots check` from the PR and is byte for byte identical to the native plotter.
 
 ## How v2 plots are made today
 
@@ -52,7 +52,7 @@ all outputs byte identical (`tools/bench.sh`, browser numbers from the page):
 | 22 | 12 MB | 0.26 GB | 1.1 s | 1.4 s | 2.5 s | 2.2 s |
 | 24 | 53 MB | 1.0 GB | 8.0 s | 7.9 s | 7.9 s | about 8 s |
 | 26 | 230 MB | 2.2 GB | 56 s | 52 s | 180 s | 31 s |
-| 28 | 989 MB | 8.7 GB | 73 s | | | |
+| 28 | 989 MB | 8.7 GB (13 GB footprint) | 73 s | 78 s | | 2 min 10 s, 10.9 GB heap |
 
 Caveats: this machine was swapping during these runs (a Docker VM was holding about 16 GB),
 which hurts the k26 native and Node numbers. Chrome kept its memory resident and was fastest
@@ -62,6 +62,18 @@ Profiling (macOS `sample` on native k24) shows the plotter's threads idle about 
 the time: it forks and joins all threads for every match key, so serial sections and load
 imbalance dominate. Hashing is not the bottleneck: building natively without hardware AES
 (the code path WASM uses) gives the same time.
+
+k28 in the browser uses the memory64 build. The plotter's working buffer is 8.7 GB, and
+the final proof fragments need about 2 GB more. Upstream `Plotter::run` copies that vector
+instead of moving it, which pushed the browser heap to 13 GB. `core/CMakeLists.txt`
+generates a copy of `Plotter.hpp` with `std::move`, which brings the peak to 10.9 GB. WASM
+memory never shrinks, so the page drops the plotter worker when it goes idle.
+
+Validating k28 in the browser is slow (about 90 s for 30 challenges, versus 5 s for
+chia_rs). Nearly all of it is the solver, which hashes every x with `g(x)`, 32 AES rounds,
+for each proof. WASM has no AES instructions, so this runs in software. Moving `g(x)` to
+WebGPU is the obvious next step and would also speed up the plotter's Xs phase (7 s in the
+browser, 1 s natively).
 
 ## Layout
 

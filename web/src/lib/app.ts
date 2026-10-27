@@ -179,7 +179,7 @@ export async function start() {
 
   const makeWorker = () => new Worker(new URL("./plotter.worker.ts", import.meta.url), { type: "module" });
   let worker = makeWorker();
-  const statsSource: PlotStatsSource = { plotterHeapBytes: 0, finished: [] };
+  const statsSource: PlotStatsSource = { plotterHeapBytes: 0, peakHeapBytes: 0, finished: [] };
   startStats($<HTMLElement>("#stats"), statsSource);
   const validator = new Validator();
   let running = false;
@@ -207,7 +207,10 @@ export async function start() {
       worker.onmessage = (ev: MessageEvent<FromWorker>) => {
         const m = ev.data;
         if (m.type === "progress") {
-          if (m.heapBytes) statsSource.plotterHeapBytes = m.heapBytes;
+          if (m.heapBytes) {
+            statsSource.plotterHeapBytes = m.heapBytes;
+            statsSource.peakHeapBytes = Math.max(statsSource.peakHeapBytes, m.heapBytes);
+          }
           const elapsed = performance.now() - started;
           const pct = (m.fraction * 100).toFixed(1);
           const eta = m.phase === "plotting" && m.fraction > 0.05 ? `, about ${fmtMs(elapsed / m.fraction - elapsed)} left` : "";

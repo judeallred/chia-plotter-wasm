@@ -13,9 +13,25 @@ add_library(fse STATIC ${FSE_SRC})
 target_include_directories(fse PUBLIC ${POS2_DIR}/lib/fse/fse)
 target_compile_definitions(fse PUBLIC FSE_MAX_MEMORY_USAGE=16)
 
+# Patched copy of plot/Plotter.hpp. Upstream copies the final proof fragments into
+# PlotData instead of moving them, which costs an extra 2 GB of peak memory at k28. That
+# decides whether k28 fits in a browser tab, so we generate a copy with std::move.
+set(GEN_DIR ${CMAKE_CURRENT_BINARY_DIR}/gen)
+file(READ ${POS2_DIR}/src/plot/Plotter.hpp plotter_src)
+set(plotter_copy "plot_data.t3_proof_fragments = t3_proof_fragments;")
+string(FIND "${plotter_src}" "${plotter_copy}" plotter_copy_pos)
+if(plotter_copy_pos EQUAL -1)
+  message(FATAL_ERROR "Plotter.hpp changed upstream. Update the std::move patch in core/CMakeLists.txt.")
+endif()
+string(REPLACE "${plotter_copy}" "plot_data.t3_proof_fragments = std::move(t3_proof_fragments);" plotter_src "${plotter_src}")
+file(WRITE ${GEN_DIR}/plot/Plotter.hpp "${plotter_src}")
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${POS2_DIR}/src/plot/Plotter.hpp)
+
 add_library(pos2w_core INTERFACE)
-# overrides/ must come first so its common/thread.hpp replaces the upstream one.
-target_include_directories(pos2w_core INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/overrides ${POS2_DIR}/src)
+# Search order matters. gen/ and overrides/ shadow upstream files. src/plot is last so the
+# generated Plotter.hpp can still find its neighbours, which it includes without a prefix.
+target_include_directories(pos2w_core INTERFACE
+  ${GEN_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/overrides ${POS2_DIR}/src ${POS2_DIR}/src/plot)
 target_link_libraries(pos2w_core INTERFACE fse)
 
 if(EMSCRIPTEN)

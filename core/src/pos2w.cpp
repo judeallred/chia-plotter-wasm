@@ -162,6 +162,11 @@ POS2W_EXPORT int32_t pos2w_start(uint8_t const* plot_id,
     if (index < 0 || index > 65535 || meta_group < 0 || meta_group > 255) {
         return -3;
     }
+    // k28 needs an 8.7 GB working buffer. With 32 bit pointers that size wraps around and
+    // the plotter would write out of bounds, so only 64 bit builds may plot above k26.
+    if (sizeof(void*) < 8 && k > 26) {
+        return -5;
+    }
     if (plot_id == nullptr || memo == nullptr || memo_len <= 0 || memo_len > 255) {
         return -4;
     }

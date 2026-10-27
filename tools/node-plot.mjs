@@ -39,7 +39,7 @@ while (M._pos2w_status() === 1) {
   process.stderr.write(`\r${(M._pos2w_progress() * 100).toFixed(1)}% phase=${M._pos2w_phase()} table=${M._pos2w_table()}`);
 }
 process.stderr.write("\n");
-if (M._pos2w_status() !== 2) throw new Error(M.UTF8ToString(M._pos2w_error()));
+if (M._pos2w_status() !== 2) throw new Error(M.UTF8ToString(ptr(M._pos2w_error())));
 const t1 = performance.now();
 
 const fh = await open(out, "w");

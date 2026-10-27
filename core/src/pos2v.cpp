@@ -8,6 +8,7 @@
 // This file runs those steps with the same pos2-chip code. The caller computes the
 // challenges (sha256 of the 32 byte big endian index) and reads the plot header itself.
 
+#include <chrono>
 #include <cstdint>
 #include <cstring>
 #include <string>
@@ -34,7 +35,14 @@ struct Result {
     int32_t found = 0;
     int32_t solved = 0;
     int32_t valid = 0;
+    double prove_ms = 0;
+    double solve_ms = 0;
 };
+
+double ms_since(std::chrono::steady_clock::time_point t)
+{
+    return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t).count();
+}
 Result g_result;
 
 } // namespace
@@ -54,6 +62,7 @@ POS2V_EXPORT int32_t pos2v_challenge(char const* path,
     std::span<uint8_t const, 32> const challenge_span(challenge, challenge + 32);
 
     std::vector<QualityChain> qualities;
+    auto const t_prove = std::chrono::steady_clock::now();
     try {
         Prover prover(path);
         qualities = prover.prove(challenge_span);
@@ -62,6 +71,8 @@ POS2V_EXPORT int32_t pos2v_challenge(char const* path,
         g_error = std::string("reading plot failed: ") + e.what();
         return -1;
     }
+    g_result.prove_ms = ms_since(t_prove);
+    auto const t_solve = std::chrono::steady_clock::now();
     if (qualities.size() > kMaxQualities) {
         qualities.resize(kMaxQualities);
     }
@@ -96,8 +107,13 @@ POS2V_EXPORT int32_t pos2v_challenge(char const* path,
             g_error = std::string("solving failed: ") + e.what();
         }
     }
+    g_result.solve_ms = ms_since(t_solve);
     return 0;
 }
+
+// Time spent finding qualities and solving plus validating, for the last challenge.
+POS2V_EXPORT double pos2v_prove_ms() { return g_result.prove_ms; }
+POS2V_EXPORT double pos2v_solve_ms() { return g_result.solve_ms; }
 
 POS2V_EXPORT int32_t pos2v_found() { return g_result.found; }
 POS2V_EXPORT int32_t pos2v_solved() { return g_result.solved; }
