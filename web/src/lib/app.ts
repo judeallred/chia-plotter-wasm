@@ -241,10 +241,7 @@ export async function start() {
   const formError = $<HTMLElement>("#form-error");
   const history = $<HTMLTableSectionElement>("#history tbody");
 
-  applySettings(form, {
-    threads: caps.threads,
-    output: caps.dirPicker ? "dir" : "download",
-  });
+  applySettings(form, { threads: caps.threads, output: "download" });
   // Settings store gpu as a boolean, the form uses "on" and "off". Default to the GPU.
   const applySaved = (saved: Record<string, unknown>) =>
     applySettings(form, { ...saved, gpu: saved.gpu === false ? "off" : "on" });
@@ -255,9 +252,14 @@ export async function start() {
   if (!caps.dirPicker) {
     form.querySelector<HTMLInputElement>('[name="output"][value="dir"]')!.disabled = true;
     applySettings(form, { output: "download" });
-    pickBtn.hidden = true;
-    $<HTMLElement>("#dir-hint").hidden = true;
   }
+  // Folder controls only matter when saving into a folder.
+  const dirPanel = $<HTMLElement>("#dir-panel");
+  const syncOutput = () => {
+    dirPanel.hidden = !caps.dirPicker || readSettings(form).output !== "dir";
+  };
+  syncOutput();
+  form.addEventListener("change", syncOutput);
 
   // Expected filter passes for the chosen strength, from today's consensus constants:
   // 64 signage points per 600 s sub slot, filter bits min(9 + strength - 2, 13).

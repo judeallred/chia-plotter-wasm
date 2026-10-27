@@ -310,20 +310,22 @@ import "../styles/app.css";
 
         <fieldset>
           <legend>Output</legend>
+          <label class="option"><input type="radio" name="output" value="download" checked /> <span>Download each plot</span></label>
           <label class="option"><input type="radio" name="output" value="dir" /> <span>Save into a folder <small id="dir-name"></small></span></label>
-          <label class="option"><input type="radio" name="output" value="download" /> Download each plot</label>
-          <button type="button" id="pick-dir" class="btn btn-secondary">Choose folder…</button>
-          <p class="hint" id="dir-hint">
-            Use a folder just for plots, for example a <code>plots</code> folder on the drive you
-            farm from. Chrome won't open top level folders such as your home folder, Desktop,
-            Documents, or Downloads, or any system folder, but folders inside them are fine.
-            Use <b>New Folder</b> in the picker to make one. Then tell your harvester about it
-            with <code>chia plots add -d &lt;folder&gt;</code>.
-          </p>
-          <label class="option" data-group-modes="drive separate shared continue">
-            <input type="checkbox" name="groupFolders" />
-            <span>Put plots in a subfolder per drive (<code>drive-&lt;key id&gt;</code>) or per group (<code>group-&lt;group id&gt;-m&lt;meta group&gt;</code>)</span>
-          </label>
+          <div id="dir-panel" class="subpanel" hidden>
+            <button type="button" id="pick-dir" class="btn btn-secondary">Choose folder…</button>
+            <p class="hint" id="dir-hint">
+              Use a folder just for plots, for example a <code>plots</code> folder on the drive you
+              farm from. Chrome won't open top level folders such as your home folder, Desktop,
+              Documents, or Downloads, or any system folder, but folders inside them are fine.
+              Use <b>New Folder</b> in the picker to make one. Then tell your harvester about it
+              with <code>chia plots add -d &lt;folder&gt;</code>.
+            </p>
+            <label class="option" data-group-modes="drive separate shared continue">
+              <input type="checkbox" name="groupFolders" />
+              <span>Put plots in a subfolder per drive (<code>drive-&lt;key id&gt;</code>) or per group (<code>group-&lt;group id&gt;-m&lt;meta group&gt;</code>)</span>
+            </label>
+          </div>
         </fieldset>
 
         <label>
