@@ -258,6 +258,16 @@ td ul.checks {
   margin: 8px 0;
 }
 
+.group-rate {
+  margin: 8px 0;
+  font-size: 0.9rem;
+}
+
+.group-rate.low {
+  border-left: 3px solid #b7791f;
+  padding-left: 10px;
+}
+
 .read-rate {
   display: block;
   margin-top: 4px;

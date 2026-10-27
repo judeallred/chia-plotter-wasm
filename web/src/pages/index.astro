@@ -55,7 +55,7 @@ import "../styles/app.css";
           <label>
             Strength
             <input name="strength" type="number" min="2" max="17" value="2" />
-            <small>2 to 17. Each step halves how often the plot passes the filter, and consensus doubles its chance to win when it passes, so expected rewards are the same at any strength. Higher means fewer disk reads but slower plotting and proving. The filter caps at 2^13 today (strength 6), higher values only start mattering as scheduled filter reductions arrive.</small>
+            <small>2 to 17. Each step halves how often the plot passes the filter, and consensus doubles its chance to win when it passes, so expected rewards are the same at any strength. Higher means fewer disk reads but slower plotting and proving. The filter caps at 1 in 8,192 today, reached at strength 6. Higher strengths only help after the <a href="https://github.com/Chia-Network/chips/pull/161" target="_blank" rel="noopener">scheduled</a> changes: base filter cuts (first one 6 years after the fork, then every 3 years) and later rises in the minimum strength, after which plots at the old minimum must be replotted.</small>
             <small id="read-rate" class="read-rate"></small>
           </label>
           <label>
@@ -106,9 +106,13 @@ import "../styles/app.css";
               </tbody>
             </table>
             <p>
-              These are today's rates. Chia plans to lower the base filter over the years, which
-              makes every strength pass more often, so higher strengths keep drives quieter for
-              longer. Higher strength costs plotting time (strength 6 took about 3.5 times as long
+              These are today's rates. Chia has <a href="https://github.com/Chia-Network/chips/pull/161" target="_blank" rel="noopener">scheduled</a>
+              cuts to the base filter (proposed in CHIP-49: the first 6 years after the fork, then
+              every 3 years), which make every strength pass more often, so higher strengths keep
+              drives quieter for longer. CHIP-49 also plans to raise the minimum strength later
+              (not for 10 or more years, with months of warning), and plots at the old minimum then
+              have to be replotted. CHIP-49 counts strength from 0, while chia-blockchain and this
+              page count from 2, so CHIP strength 4 is strength 6 here. Higher strength costs plotting time (strength 6 took about 3.5 times as long
               as strength 2 in our tests) and makes each proof slower to solve, so check your
               hardware with Validate plots before committing a lot of plots to a high strength.
             </p>
@@ -169,6 +173,7 @@ import "../styles/app.css";
           <label class="inline"><input type="radio" name="groupKeys" value="separate" /> New groups, independent: each group gets its own plot key</label>
           <label class="inline"><input type="radio" name="groupKeys" value="shared" /> New groups, staggered: groups share one plot key, meta groups step by 16</label>
           <label class="inline"><input type="radio" name="groupKeys" value="continue" /> Add to an existing group</label>
+          <p id="group-rate" class="group-rate" data-group-modes="separate shared continue"></p>
           <div id="continue-panel" class="subpanel" hidden>
             <p class="hint">
               A group is identified by its plot key, which is stored in every plot of the group.

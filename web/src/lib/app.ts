@@ -243,6 +243,36 @@ export async function start() {
       `A 4 TB drive of ${drivePlots.toLocaleString()} ungrouped plots has ${drive}.${capped}`;
   };
 
+  // When grouping, how often each group (and so its drive) gets read. Uses the existing
+  // group's strength when adding to a group.
+  const groupRate = $<HTMLElement>("#group-rate");
+  let groupStrength: () => number | null = () => null;
+  const fmtInterval = (minutes: number) =>
+    minutes >= 60 ? `${(minutes / 60).toFixed(1)} hours` : `${Math.round(minutes)} minutes`;
+  const syncGroupRate = () => {
+    const s = readSettings(form);
+    const strength = s.groupKeys === "continue" ? groupStrength() : s.strength;
+    if (s.groupKeys === "none" || strength === null || !(strength >= 2 && strength <= 17)) {
+      groupRate.textContent = "";
+      groupRate.classList.remove("low");
+      return;
+    }
+    const passesPerDay = (st: number) => 9216 / 2 ** Math.min(9 + st - 2, 13);
+    const perDay = passesPerDay(strength);
+    const every = fmtInterval((24 * 60) / perDay);
+    const low = strength <= 3;
+    groupRate.classList.toggle("low", low);
+    groupRate.textContent =
+      `At strength ${strength}, each group will be read about every ${every} (about ${perDay.toFixed(perDay < 10 ? 1 : 0)} times a day), ` +
+      `so a drive holding one group can sleep between reads if its spin-down timer is shorter than that.` +
+      (low
+        ? ` That is still about ${Math.round(perDay)} spin-ups a day. If fewer spin-ups matter, use strength 4 to 6: ` +
+          `strength 4 is about every ${fmtInterval((24 * 60) / passesPerDay(4))}, strength 6 about every ${fmtInterval((24 * 60) / passesPerDay(6))}, ` +
+          `with slower plotting and proving.`
+        : "") +
+      (s.groupKeys === "continue" ? " Strength comes from the existing group." : "");
+  };
+
   const syncPoolMode = () => {
     const mode = readSettings(form).poolMode;
     form.querySelectorAll<HTMLElement>("[data-mode]").forEach((el) => {
@@ -252,6 +282,8 @@ export async function start() {
   syncPoolMode();
   syncReadRate();
   form.addEventListener("input", syncReadRate);
+  form.addEventListener("input", syncGroupRate);
+  form.addEventListener("change", syncGroupRate);
   form.addEventListener("change", () => {
     syncPoolMode();
     localStorage.setItem(STORAGE_KEY, JSON.stringify(readSettings(form)));
@@ -388,6 +420,8 @@ export async function start() {
       `Farmer ${cont.farmerKey.slice(0, 12)}…, pool ${cont.pool.slice(0, 16)}…`;
   };
   showCont();
+  groupStrength = () => cont?.strength ?? null;
+  syncGroupRate();
 
   // Groups are keyed by group ID and meta group: staggered groups share the ID.
   const loadGroups = async (files: { file: File }[]) => {
@@ -411,10 +445,12 @@ export async function start() {
     contPick.onchange = () => {
       cont = list[Number(contPick.value)] ?? null;
       showCont();
+      syncGroupRate();
     };
     cont = list[0] ?? null;
     if (!cont) contInfo.textContent = "No readable plots found there.";
     else showCont();
+    syncGroupRate();
   };
   $<HTMLButtonElement>("#cont-dir").addEventListener("click", async () => {
     try {
