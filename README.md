@@ -84,7 +84,7 @@ browser, 1 s natively).
   thread-per-task pattern with a persistent pool, because creating pthreads in WASM is slow
   and stalls when done from another pthread.
 - `keys/` Rust crate for plot ID and memo derivation, compiled to WASM with wasm-pack.
-- `web/` Astro site. The plotter runs in a Web Worker and streams the file to disk.
+- `web/` Astro site styled with Tailwind CSS v4 (`src/styles/app.css` holds the theme tokens and a small components layer). The plotter runs in a Web Worker and streams the file to disk.
 - `tools/` checker and test scripts.
 
 ## Build and run

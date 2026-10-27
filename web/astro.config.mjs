@@ -1,4 +1,5 @@
 import { defineConfig } from "astro/config";
+import tailwindcss from "@tailwindcss/vite";
 
 // SharedArrayBuffer (needed for WASM threads) requires cross-origin isolation.
 const isolation = {
@@ -9,6 +10,7 @@ const isolation = {
 export default defineConfig({
   server: { headers: isolation },
   vite: {
+    plugins: [tailwindcss()],
     server: { headers: isolation },
     preview: { headers: isolation },
     worker: { format: "es" },
