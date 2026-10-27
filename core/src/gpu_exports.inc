@@ -20,3 +20,25 @@ EXPORT_FN uint32_t gpu_cpu_g(uint8_t const* plot_id, int32_t k, int32_t testnet,
     ProofCore core(params);
     return core.hashing.g(x);
 }
+
+// CPU reference for one matching target, for the GPU self test.
+EXPORT_FN uint32_t gpu_cpu_match_target(uint8_t const* plot_id,
+    int32_t k,
+    int32_t strength,
+    int32_t table_id,
+    uint32_t match_key,
+    uint32_t meta_lo,
+    uint32_t meta_hi)
+{
+    ProofParams params(plot_id, uint8_t(k), uint8_t(strength), 0);
+    ProofCore core(params);
+    return core.matching_target(size_t(table_id), (uint64_t(meta_hi) << 32) | meta_lo, match_key);
+}
+
+// Matching target mask width for a table, for the GPU self test.
+EXPORT_FN int32_t gpu_match_target_bits(int32_t k, int32_t strength, int32_t table_id)
+{
+    uint8_t id[32] = {};
+    ProofParams params(id, uint8_t(k), uint8_t(strength), 0);
+    return static_cast<int32_t>(params.get_num_match_target_bits(table_id));
+}

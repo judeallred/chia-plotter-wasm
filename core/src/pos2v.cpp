@@ -171,4 +171,6 @@ POS2V_EXPORT char const* pos2v_error() { return g_error.c_str(); }
 #define gpu_total_ms pos2v_gpu_total_ms
 #define gpu_reset_total pos2v_gpu_reset_total
 #define gpu_cpu_g pos2v_gpu_cpu_g
+#define gpu_cpu_match_target pos2v_gpu_cpu_match_target
+#define gpu_match_target_bits pos2v_gpu_match_target_bits
 #include "gpu_exports.inc"

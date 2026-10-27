@@ -376,6 +376,8 @@ POS2W_EXPORT int32_t pos2w_threads() { return static_cast<int32_t>(pos2w::TaskPo
 #define gpu_total_ms pos2w_gpu_total_ms
 #define gpu_reset_total pos2w_gpu_reset_total
 #define gpu_cpu_g pos2w_gpu_cpu_g
+#define gpu_cpu_match_target pos2w_gpu_cpu_match_target
+#define gpu_match_target_bits pos2w_gpu_match_target_bits
 #include "gpu_exports.inc"
 
 // Milliseconds the last plot spent in one phase of one table. table is 0 (Xs) to 3, phase is

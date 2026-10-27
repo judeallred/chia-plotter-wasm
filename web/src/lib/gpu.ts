@@ -9,9 +9,11 @@
 const R = {
   state: 0, op: 4, k: 8, xorConst: 12, key1: 16, key2: 32, bitmaskShift: 48,
   bitmaskWords: 52, outPtr: 56, outCapacity: 64, bitmaskPtr: 72, resultCount: 80, gpuMs: 88,
+  tableId: 96, matchKey: 100, rounds: 104, mask: 108, inPtr: 112, count: 120,
 } as const;
+const REQUEST_BYTES = 128;
 const State = { idle: 0, requested: 1, done: 2, failed: 3 } as const;
-const Op = { fillXs: 1, filterBitmask: 2 } as const;
+const Op = { fillXs: 1, filterBitmask: 2, matchTargets: 3 } as const;
 
 const SBOX = new Uint8Array([
   0x63, 0x7c, 0x77, 0x7b, 0xf2, 0x6b, 0x6f, 0xc5, 0x30, 0x01, 0x67, 0x2b, 0xfe, 0xd7, 0xab, 0x76,
@@ -102,6 +104,22 @@ fn fill_xs(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(local_invocat
   out_buf[2u * idx + 1u] = x;
 }
 
+// Matching targets for table construction. For this entry point the Params fields are
+// reused: shift is the table ID, capacity the match key, pad the round count, and bitmask
+// holds the input metas as (lo, hi) pairs.
+@compute @workgroup_size(256)
+fn match_targets(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(local_invocation_index) li: u32) {
+  load_tables(li);
+  let idx = gid.x + gid.y * P.row;
+  if (idx >= P.count) { return; }
+  var w = vec4<u32>(P.shift, P.capacity, bitmask[2u * idx], bitmask[2u * idx + 1u]);
+  for (var r = 0u; r < P.pad; r++) {
+    w = enc(w, P.key1);
+    w = enc(w, P.key2);
+  }
+  out_buf[idx] = w.x & P.mask;
+}
+
 // Appends {x, g(x)} for every x whose bit (g(x) >> shift) is set in bitmask.
 @compute @workgroup_size(256)
 fn filter_bitmask(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(local_invocation_index) li: u32) {
@@ -140,8 +158,12 @@ export class GpuG {
     readonly adapterInfo: string,
     private fillPipe: GPUComputePipeline,
     private filterPipe: GPUComputePipeline,
+    private matchPipe: GPUComputePipeline,
     private lut: GPUBuffer,
   ) {}
+
+  // Buffers reused across matchTargets calls, grown as needed.
+  private mt: { cap: number; metas: GPUBuffer; out: GPUBuffer; read: GPUBuffer; counter: GPUBuffer } | null = null;
 
   lost = false;
 
@@ -172,23 +194,25 @@ export class GpuG {
     const pipelineLayout = device.createPipelineLayout({ bindGroupLayouts: [layout] });
     const fillPipe = device.createComputePipeline({ layout: pipelineLayout, compute: { module, entryPoint: "fill_xs" } });
     const filterPipe = device.createComputePipeline({ layout: pipelineLayout, compute: { module, entryPoint: "filter_bitmask" } });
+    const matchPipe = device.createComputePipeline({ layout: pipelineLayout, compute: { module, entryPoint: "match_targets" } });
     const lut = device.createBuffer({ size: 4096, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
     device.queue.writeBuffer(lut, 0, tTables());
     const i = adapter.info;
-    const g = new GpuG(device, [i.vendor, i.architecture, i.device].filter(Boolean).join(" "), fillPipe, filterPipe, lut);
+    const g = new GpuG(device, [i.vendor, i.architecture, i.device].filter(Boolean).join(" "), fillPipe, filterPipe, matchPipe, lut);
     device.lost.then(() => {
       g.lost = true;
     });
     return g;
   }
 
-  private params(p: GParams, xStart: number, count: number, shift = 0, capacity = 0): GPUBuffer {
+  private params(p: GParams, xStart: number, count: number, shift = 0, capacity = 0, mask?: number, pad = 0): GPUBuffer {
     const u = new Uint32Array(16);
     u.set(p.key1, 0);
     u.set(p.key2, 4);
     const groups = Math.ceil(count / WG);
     const gx = Math.min(groups, 65535);
-    u.set([xStart, count, p.xorConst, p.k >= 32 ? 0xffffffff : (1 << p.k) - 1, shift, capacity, gx * WG, 0], 8);
+    const kMask = p.k >= 32 ? 0xffffffff : (1 << p.k) - 1;
+    u.set([xStart, count, p.xorConst, mask ?? kMask, shift, capacity, gx * WG, pad], 8);
     const buf = this.device.createBuffer({ size: u.byteLength, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
     this.device.queue.writeBuffer(buf, 0, u);
     return buf;
@@ -265,6 +289,46 @@ export class GpuG {
     }
   }
 
+  // Matching targets for count metas given as (lo, hi) u32 pairs. Returns count targets.
+  async matchTargets(p: GParams, tableId: number, matchKey: number, rounds: number, mask: number, metas: Uint32Array): Promise<Uint32Array> {
+    const d = this.device;
+    const count = metas.length / 2;
+    if (!this.mt || this.mt.cap < count) {
+      this.mt?.metas.destroy();
+      this.mt?.out.destroy();
+      this.mt?.read.destroy();
+      this.mt?.counter.destroy();
+      const cap = Math.max(count, 1 << 16);
+      if (cap * 8 > d.limits.maxStorageBufferBindingSize) throw new Error("match target chunk exceeds GPU buffer limit");
+      this.mt = {
+        cap,
+        metas: d.createBuffer({ size: cap * 8, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST }),
+        out: d.createBuffer({ size: cap * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC }),
+        read: d.createBuffer({ size: cap * 4, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST }),
+        counter: d.createBuffer({ size: 16, usage: GPUBufferUsage.STORAGE }),
+      };
+    }
+    const mt = this.mt;
+    d.pushErrorScope("validation");
+    d.queue.writeBuffer(mt.metas, 0, metas);
+    const params = this.params(p, 0, count, tableId, matchKey, mask, rounds);
+    const enc = d.createCommandEncoder();
+    const pass = enc.beginComputePass();
+    pass.setPipeline(this.matchPipe);
+    pass.setBindGroup(0, this.bindGroup(this.matchPipe, params, mt.out, mt.metas, mt.counter));
+    pass.dispatchWorkgroups(...this.dispatchSize(count));
+    pass.end();
+    enc.copyBufferToBuffer(mt.out, 0, mt.read, 0, count * 4);
+    d.queue.submit([enc.finish()]);
+    await mt.read.mapAsync(GPUMapMode.READ, 0, count * 4);
+    const result = new Uint32Array(mt.read.getMappedRange(0, count * 4)).slice();
+    mt.read.unmap();
+    params.destroy();
+    const err = await d.popErrorScope();
+    if (err) throw new Error(`WebGPU: ${err.message}`);
+    return result;
+  }
+
   // Returns {x, g(x)} pairs whose bitmask bit is set, and the total number of matches,
   // which can exceed capacity.
   async filterBitmask(p: GParams, bitmask: Uint32Array, shift: number, capacity: number) {
@@ -337,7 +401,7 @@ function readParams(view: DataView): GParams {
 // values, including the top of the range. Returns false on any difference. Set big for
 // memory64 builds, whose exports take pointers as BigInt.
 export async function selfTest(
-  gpu: GpuG, M: GpuHost, prefix: string, big: boolean, plotId: Uint8Array, k: number, testnet: boolean,
+  gpu: GpuG, M: GpuHost, prefix: string, big: boolean, plotId: Uint8Array, k: number, testnet: boolean, strength = 2,
 ): Promise<boolean> {
   const toPtr = (n: number) => (big ? BigInt(n) : n);
   const p = ptr((M._malloc as (n: number) => unknown)(32));
@@ -358,6 +422,24 @@ export async function selfTest(
         }
       });
     }
+    // Matching targets for each table, with the round count the plotter will use.
+    const cpuMt = fn(M, prefix, "gpu_cpu_match_target");
+    const mtBits = fn(M, prefix, "gpu_match_target_bits");
+    for (let table = 1; table <= 3 && ok; table++) {
+      const bits = mtBits(k, strength, table) as number;
+      const mask = bits >= 32 ? 0xffffffff : (2 ** bits - 1) >>> 0;
+      const rounds = 16 << (table === 1 ? strength - 2 : 0);
+      const metas = new Uint32Array(512);
+      crypto.getRandomValues(metas);
+      // Table 1 metas are x values, so they fit in k bits.
+      if (table === 1) for (let i = 0; i < metas.length; i += 2) metas[i + 1] = 0, (metas[i] &= (2 ** k - 1) >>> 0);
+      const key = table === 1 ? 1 : 3;
+      const got = await gpu.matchTargets(params, table, key, rounds, mask, metas);
+      for (let i = 0; i < got.length && ok; i++) {
+        const want = (cpuMt(toPtr(p), k, strength, table, key, metas[2 * i], metas[2 * i + 1]) as number) >>> 0;
+        if (got[i] !== want) ok = false;
+      }
+    }
   } finally {
     (M._free as (p: number) => void)(p);
   }
@@ -377,7 +459,7 @@ export function serve(gpu: GpuG, M: GpuHost, prefix: string, log: (msg: string) 
         if (w.async) await w.value;
         continue;
       }
-      const view = new DataView(M.wasmMemory.buffer, base, 96);
+      const view = new DataView(M.wasmMemory.buffer, base, REQUEST_BYTES);
       const t0 = performance.now();
       let ok = true;
       try {
@@ -395,9 +477,19 @@ export function serve(gpu: GpuG, M: GpuHost, prefix: string, log: (msg: string) 
           const capacity = Number(view.getBigUint64(R.outCapacity, true));
           const bitmask = new Uint32Array(M.wasmMemory.buffer, maskPtr, words).slice();
           const { pairs, total } = await gpu.filterBitmask(params, bitmask, view.getUint32(R.bitmaskShift, true), capacity);
-          const fresh = new DataView(M.wasmMemory.buffer, base, 96);
+          const fresh = new DataView(M.wasmMemory.buffer, base, REQUEST_BYTES);
           new Uint32Array(M.wasmMemory.buffer, outPtr, pairs.length).set(pairs);
           fresh.setBigUint64(R.resultCount, BigInt(total), true);
+        } else if (op === Op.matchTargets) {
+          const count = Number(view.getBigUint64(R.count, true));
+          const inPtr = Number(view.getBigUint64(R.inPtr, true));
+          // A copy, because writeBuffer does not take views of shared memory everywhere.
+          const metas = new Uint32Array(M.wasmMemory.buffer, inPtr, count * 2).slice();
+          const targets = await gpu.matchTargets(
+            params, view.getUint32(R.tableId, true), view.getUint32(R.matchKey, true),
+            view.getUint32(R.rounds, true), view.getUint32(R.mask, true), metas,
+          );
+          new Uint32Array(M.wasmMemory.buffer, outPtr, count).set(targets);
         } else {
           throw new Error(`unknown GPU op ${op}`);
         }
@@ -405,7 +497,7 @@ export function serve(gpu: GpuG, M: GpuHost, prefix: string, log: (msg: string) 
         ok = false;
         log(`GPU request failed, falling back to CPU: ${e instanceof Error ? e.message : e}`);
       }
-      const fresh = new DataView(M.wasmMemory.buffer, base, 96);
+      const fresh = new DataView(M.wasmMemory.buffer, base, REQUEST_BYTES);
       fresh.setFloat64(R.gpuMs, performance.now() - t0, true);
       const s = new Int32Array(M.wasmMemory.buffer, base, 1);
       Atomics.store(s, 0, ok ? State.done : State.failed);

@@ -35,6 +35,14 @@ endfunction()
 # a patched header is only used consistently if its neighbours come from gen/ too.
 file(COPY ${POS2_DIR}/src/plot ${POS2_DIR}/src/solve DESTINATION ${GEN_DIR})
 
+# TableConstructorGeneric.hpp: try the GPU for the matching target hash before the CPU loop.
+file(READ ${GEN_DIR}/plot/TableConstructorGeneric.hpp tcg_src)
+pos2w_edit(tcg_src "#include \"pos/ProofValidator.hpp\"" "#include \"pos/ProofValidator.hpp\"\n#include \"table_gpu.hpp\"")
+pos2w_edit(tcg_src
+  "parallel_for_range(uint64_t(0),\n                    uint64_t(l_count),"
+  "std::size_t const pos2w_done = pos2w::gpu_match_targets(params_, int(table_id_), previous_table_pairs.data() + l_start, l_ptr, l_count, match_key_r);\n                parallel_for_range(uint64_t(pos2w_done),\n                    uint64_t(l_count),")
+file(WRITE ${GEN_DIR}/plot/TableConstructorGeneric.hpp "${tcg_src}")
+
 file(READ ${GEN_DIR}/plot/Plotter.hpp plotter_src)
 pos2w_edit(plotter_src
   "plot_data.t3_proof_fragments = t3_proof_fragments;"
@@ -69,7 +77,8 @@ file(WRITE ${GEN_DIR}/solve/Solver.hpp "${solver_src}")
 
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
   ${POS2_DIR}/src/plot/Plotter.hpp ${POS2_DIR}/src/solve/Solver.hpp
-  ${CMAKE_CURRENT_SOURCE_DIR}/src/solver_gpu_inject.inc)
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/solver_gpu_inject.inc
+  ${POS2_DIR}/src/plot/TableConstructorGeneric.hpp)
 
 add_library(pos2w_core INTERFACE)
 # Search order matters: gen/ and overrides/ shadow upstream files.

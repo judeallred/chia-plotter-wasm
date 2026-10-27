@@ -35,6 +35,10 @@ enum Op : int32_t {
     // Write {x, g(x)} for every x whose bitmask bit (g(x) >> shift) is set, in any order.
     // result_count receives the number of matches, even if it exceeds out_capacity.
     kFilterBitmask = 2,
+    // For each of count 64 bit metas at in_ptr, write the 32 bit matching target to out_ptr:
+    // `rounds` iterations of the two AES rounds on the state {table_id, match_key, meta lo,
+    // meta hi}, lane 0 masked with mask (AesHash::matching_target).
+    kMatchTargets = 3,
 };
 
 // Field order and sizes are mirrored in web/src/lib/gpu.ts. Keep them in sync.
@@ -52,11 +56,19 @@ struct Request {
     uint64_t bitmask_ptr;
     uint64_t result_count;
     double gpu_ms; // filled in by JavaScript
+    // kMatchTargets parameters.
+    uint32_t table_id;
+    uint32_t match_key;
+    uint32_t rounds;
+    uint32_t mask;
+    uint64_t in_ptr;
+    uint64_t count;
 };
 
 static_assert(offsetof(Request, key1) == 16 && offsetof(Request, bitmask_shift) == 48
     && offsetof(Request, out_ptr) == 56 && offsetof(Request, result_count) == 80
-    && offsetof(Request, gpu_ms) == 88 && sizeof(Request) == 96,
+    && offsetof(Request, gpu_ms) == 88 && offsetof(Request, table_id) == 96
+    && offsetof(Request, in_ptr) == 112 && offsetof(Request, count) == 120 && sizeof(Request) == 128,
     "Request layout is mirrored in web/src/lib/gpu.ts");
 
 inline Request g_request {};

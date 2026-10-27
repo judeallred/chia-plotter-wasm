@@ -144,7 +144,7 @@ async function runPlot(job: PlotJob) {
       if (gpu === undefined || gpu?.lost) gpu = await GpuG.create();
       if (!gpu) {
         gpuNote = "no WebGPU adapter";
-      } else if (await selfTest(gpu, M as unknown as GpuHost, "pos2w", big, job.plotId, job.k, job.testnet)) {
+      } else if (await selfTest(gpu, M as unknown as GpuHost, "pos2w", big, job.plotId, job.k, job.testnet, job.strength)) {
         service = serve(gpu, M as unknown as GpuHost, "pos2w", (m) => console.warn(m));
         M._pos2w_gpu_enable(1);
         gpuNote = gpu.adapterInfo || "GPU";
