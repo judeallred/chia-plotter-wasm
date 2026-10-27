@@ -374,9 +374,8 @@ export async function start() {
       if (rec.id === session.id) continue;
       sessionPick.add(new Option(`${rec.summary} · ${fmtAgo(rec.updated)}`, rec.id));
     }
-    sessionPick.disabled = sessionPick.options.length < 2;
-    if (sessionPick.disabled) keep.textContent = "No other sessions yet";
-    else keep.textContent = "Load settings from another tab or an earlier session…";
+    // Hidden until another tab or an earlier session has saved settings.
+    $<HTMLElement>("#sessions").hidden = sessionPick.options.length < 2;
   };
   fillSessions();
   sessionPick.addEventListener("focus", fillSessions);
