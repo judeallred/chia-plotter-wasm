@@ -252,6 +252,12 @@ td ul.checks {
   font-size: 0.8rem;
 }
 
+.subpanel {
+  border-left: 3px solid var(--line);
+  padding-left: 12px;
+  margin: 8px 0;
+}
+
 #v-results {
   margin-top: 12px;
 }

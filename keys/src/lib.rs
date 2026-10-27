@@ -244,3 +244,36 @@ pub fn inspect_memo(memo: &[u8], strength: u8, plot_index: u16, meta_group: u8, 
         plot_group_id_hex: hex::encode(plot_group_id),
     })
 }
+
+/// Splits a plot memo into pool, farmer key and plot secret key.
+fn parse_memo(memo: &[u8]) -> Result<(Pool, G1Element, SecretKey), String> {
+    let (pool, rest) = match memo.len() {
+        128 => {
+            let pk: [u8; 48] = memo[..48].try_into().unwrap();
+            (Pool::PublicKey(G1Element::from_bytes(&pk).map_err(|e| format!("pool key in memo: {e}"))?), &memo[48..])
+        }
+        112 => (Pool::ContractPuzzleHash(memo[..32].try_into().unwrap()), &memo[32..]),
+        n => return Err(format!("memo is {n} bytes, expected 112 or 128")),
+    };
+    let farmer_bytes: [u8; 48] = rest[..48].try_into().unwrap();
+    let farmer = G1Element::from_bytes(&farmer_bytes).map_err(|e| format!("farmer key in memo: {e}"))?;
+    let sk_bytes: [u8; 32] = rest[48..80].try_into().unwrap();
+    let sk = SecretKey::from_bytes(&sk_bytes).map_err(|e| format!("plot secret key in memo: {e}"))?;
+    Ok((pool, farmer, sk))
+}
+
+/// Derives another plot in the same group as an existing plot, from that plot's memo. The
+/// memo holds the plot secret key, so the new plot shares its plot key and group ID.
+#[wasm_bindgen]
+pub fn derive_from_memo(memo: &[u8], strength: u8, plot_index: u16, meta_group: u8) -> Result<DerivedPlot, JsError> {
+    let (pool, farmer, sk) = parse_memo(memo).map_err(|e| JsError::new(&e))?;
+    let include_taproot = matches!(pool, Pool::ContractPuzzleHash(_));
+    let local_pk = master_sk_to_local_sk(&sk).public_key();
+    let plot_pk = generate_plot_public_key(&local_pk, &farmer, include_taproot);
+    Ok(DerivedPlot {
+        plot_id: compute_plot_id_v2(strength, &plot_pk, &pool, plot_index, meta_group).to_vec(),
+        plot_group_id_hex: hex::encode(compute_plot_group_id_v2(strength, &plot_pk, &pool)),
+        memo: memo.to_vec(),
+        plot_public_key: hex::encode(plot_pk.to_bytes()),
+    })
+}

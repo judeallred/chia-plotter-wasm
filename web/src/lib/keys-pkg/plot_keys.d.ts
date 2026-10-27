@@ -52,6 +52,12 @@ export function check_public_key(hex_str: string): string;
 export function derive(seed: Uint8Array, farmer_public_key: string, pool_public_key: string, pool_contract_address: string, strength: number, plot_index: number, meta_group: number): DerivedPlot;
 
 /**
+ * Derives another plot in the same group as an existing plot, from that plot's memo. The
+ * memo holds the plot secret key, so the new plot shares its plot key and group ID.
+ */
+export function derive_from_memo(memo: Uint8Array, strength: number, plot_index: number, meta_group: number): DerivedPlot;
+
+/**
  * Decodes a plot memo (pool key or contract puzzle hash, farmer key, plot secret key) and
  * recomputes the plot ID the same way `create_v2_plots()` does. `address_prefix` is "xch"
  * or "txch".
@@ -67,6 +73,7 @@ export interface InitOutput {
     readonly check_address: (a: number, b: number) => [number, number];
     readonly check_public_key: (a: number, b: number) => [number, number];
     readonly derive: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number) => [number, number, number];
+    readonly derive_from_memo: (a: number, b: number, c: number, d: number, e: number) => [number, number, number];
     readonly derivedplot_memo: (a: number) => [number, number];
     readonly derivedplot_plot_group_id_hex: (a: number) => [number, number];
     readonly derivedplot_plot_id: (a: number) => [number, number];

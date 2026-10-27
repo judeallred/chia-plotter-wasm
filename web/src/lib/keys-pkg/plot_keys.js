@@ -251,6 +251,25 @@ export function derive(seed, farmer_public_key, pool_public_key, pool_contract_a
 }
 
 /**
+ * Derives another plot in the same group as an existing plot, from that plot's memo. The
+ * memo holds the plot secret key, so the new plot shares its plot key and group ID.
+ * @param {Uint8Array} memo
+ * @param {number} strength
+ * @param {number} plot_index
+ * @param {number} meta_group
+ * @returns {DerivedPlot}
+ */
+export function derive_from_memo(memo, strength, plot_index, meta_group) {
+    const ptr0 = passArray8ToWasm0(memo, wasm.__wbindgen_malloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ret = wasm.derive_from_memo(ptr0, len0, strength, plot_index, meta_group);
+    if (ret[2]) {
+        throw takeFromExternrefTable0(ret[1]);
+    }
+    return DerivedPlot.__wrap(ret[0]);
+}
+
+/**
  * Decodes a plot memo (pool key or contract puzzle hash, farmer key, plot secret key) and
  * recomputes the plot ID the same way `create_v2_plots()` does. `address_prefix` is "xch"
  * or "txch".

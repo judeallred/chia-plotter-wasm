@@ -75,9 +75,32 @@ import "../styles/app.css";
         </div>
 
         <fieldset>
-          <legend>Group wake schedule</legend>
-          <label class="inline"><input type="radio" name="groupKeys" value="separate" checked /> Independent: each group gets its own plot key</label>
-          <label class="inline"><input type="radio" name="groupKeys" value="shared" /> Staggered: groups share one plot key, meta groups step by 16</label>
+          <legend>Plot groups</legend>
+          <label class="inline"><input type="radio" name="groupKeys" value="separate" checked /> New groups, independent: each group gets its own plot key</label>
+          <label class="inline"><input type="radio" name="groupKeys" value="shared" /> New groups, staggered: groups share one plot key, meta groups step by 16</label>
+          <label class="inline"><input type="radio" name="groupKeys" value="continue" /> Add to an existing group</label>
+          <div id="continue-panel" class="subpanel" hidden>
+            <p class="hint">
+              A group is identified by its plot key, which is stored in every plot of the group.
+              Choose the group's folder (subfolders are searched) so the page can see which plot
+              indexes are taken, or a single plot from the group. New plots get the group's
+              farmer key, pool, strength and meta group, and the next free indexes.
+            </p>
+            <div class="actions">
+              <button type="button" id="cont-dir" class="secondary">Choose the group's folder…</button>
+              <label class="button secondary">Choose one plot…<input id="cont-file" type="file" accept=".plot2" hidden /></label>
+            </div>
+            <label id="cont-pick-label" hidden>
+              Group
+              <select id="cont-pick"></select>
+            </label>
+            <p id="cont-info" class="hint"></p>
+            <label>
+              First new plot index
+              <input id="cont-start" type="number" min="0" max="65535" value="0" />
+              <small>Indexes already seen in the chosen folder are skipped. With a single plot the page cannot see the rest of the group, so set this past the highest index you have used. A reused index makes a duplicate plot.</small>
+            </label>
+          </div>
           <p class="hint">
             The filter is checked in windows of 16 signage points, and a group passes at most
             once per window. With independent keys, two drives sometimes wake in the same window

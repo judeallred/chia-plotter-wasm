@@ -1,6 +1,6 @@
 // Page logic: settings form, environment checks, and the plot queue.
 
-import initKeys, { check_address, check_public_key, derive } from "./keys-pkg/plot_keys.js";
+import initKeys, { check_address, check_public_key, derive, derive_from_memo, inspect_memo } from "./keys-pkg/plot_keys.js";
 import type { FromWorker, PlotJob, Sink, Timings } from "./protocol";
 import { loadDir, saveDir } from "./saved-dir";
 import { startStats, type PlotStatsSource } from "./stats";
@@ -24,7 +24,7 @@ interface Settings {
   groupSize: number;
   metaGroup: number;
   groupFolders: boolean;
-  groupKeys: "separate" | "shared";
+  groupKeys: "separate" | "shared" | "continue";
 }
 
 const $ = <T extends Element>(sel: string) => document.querySelector(sel) as T;
@@ -79,7 +79,7 @@ function readSettings(form: HTMLFormElement): Settings {
     groupSize: Number(s("groupSize")),
     metaGroup: Number(s("metaGroup")),
     groupFolders: f.get("groupFolders") === "on",
-    groupKeys: s("groupKeys") === "shared" ? "shared" : "separate",
+    groupKeys: s("groupKeys") === "shared" ? "shared" : s("groupKeys") === "continue" ? "continue" : "separate",
   };
 }
 
@@ -96,16 +96,19 @@ function applySettings(form: HTMLFormElement, s: Partial<Settings> | Record<stri
   }
 }
 
-function validate(s: Settings, caps: ReturnType<typeof capabilities>): Record<string, string> {
+function validate(s: Settings, caps: ReturnType<typeof capabilities>, continuing: boolean): Record<string, string> {
   const errors: Record<string, string> = {};
-  const farmerErr = s.farmerKey ? check_public_key(s.farmerKey) : "required";
-  if (farmerErr) errors.farmerKey = farmerErr;
-  if (s.poolMode === "contract") {
-    const e = s.poolAddress ? check_address(s.poolAddress) : "required";
-    if (e) errors.poolAddress = e;
-  } else {
-    const e = s.poolKey ? check_public_key(s.poolKey) : "required";
-    if (e) errors.poolKey = e;
+  // When adding to an existing group, keys come from the group's plots, not the form.
+  if (!continuing) {
+    const farmerErr = s.farmerKey ? check_public_key(s.farmerKey) : "required";
+    if (farmerErr) errors.farmerKey = farmerErr;
+    if (s.poolMode === "contract") {
+      const e = s.poolAddress ? check_address(s.poolAddress) : "required";
+      if (e) errors.poolAddress = e;
+    } else {
+      const e = s.poolKey ? check_public_key(s.poolKey) : "required";
+      if (e) errors.poolKey = e;
+    }
   }
   if (!(s.strength >= 2 && s.strength <= 17)) errors.form = "Strength must be between 2 and 17.";
   if (!(s.threads >= 1)) errors.form = "Threads must be at least 1.";
@@ -115,6 +118,58 @@ function validate(s: Settings, caps: ReturnType<typeof capabilities>): Record<st
   if (!caps.isolated) errors.form = "This page is not cross-origin isolated, so the plotter cannot run.";
   if (s.k > 26 && !caps.memory64) errors.form = "k28 needs WebAssembly memory64, which this browser lacks.";
   return errors;
+}
+
+// The fields of a plot header the page needs, read from the start of the file.
+interface PlotFileInfo {
+  k: number;
+  strength: number;
+  index: number;
+  metaGroup: number;
+  memo: Uint8Array;
+  groupId: string;
+  farmerKey: string;
+  pool: string;
+}
+
+async function readPlotInfo(file: File): Promise<PlotFileInfo | null> {
+  const b = new Uint8Array(await file.slice(0, 43 + 255).arrayBuffer());
+  if (b.length < 43 || String.fromCharCode(...b.subarray(0, 4)) !== "pos2" || b[4] !== 1) return null;
+  const memo = b.slice(43, 43 + b[42]);
+  const info = { k: b[37], strength: b[38], index: b[39] | (b[40] << 8), metaGroup: b[41], memo };
+  try {
+    const m = inspect_memo(memo, info.strength, info.index, info.metaGroup, "xch");
+    const out = { ...info, groupId: m.plot_group_id_hex, farmerKey: m.farmer_public_key, pool: m.pool_contract_address || m.pool_public_key };
+    m.free();
+    return out;
+  } catch {
+    return null;
+  }
+}
+
+// Lists .plot2 files under dir, including subfolders, with their relative paths.
+async function walkPlots(d: FileSystemDirectoryHandle, prefix = ""): Promise<{ file: File; path: string }[]> {
+  const out: { file: File; path: string }[] = [];
+  for await (const entry of (d as unknown as { values(): AsyncIterable<FileSystemHandle> }).values()) {
+    if (entry.kind === "directory") {
+      out.push(...(await walkPlots(entry as FileSystemDirectoryHandle, `${prefix}${entry.name}/`)));
+    } else if (entry.name.endsWith(".plot2")) {
+      out.push({ file: await (entry as FileSystemFileHandle).getFile(), path: prefix + entry.name });
+    }
+  }
+  return out;
+}
+
+// An existing group to add plots to: its keys (from a plot memo) and the indexes in use.
+interface ContinueGroup {
+  memo: Uint8Array;
+  strength: number;
+  metaGroup: number;
+  groupId: string;
+  farmerKey: string;
+  pool: string;
+  used: Set<number>;
+  plots: number;
 }
 
 function fmtBytes(n: number) {
@@ -250,8 +305,9 @@ export async function start() {
     tr.innerHTML = `<td class="file"></td><td>${fmtBytes(bytes)}</td><td class="group"></td><td>${fmtMs(t.plotMs)}</td><td>${fmtMs(t.writeMs)}</td><td>${fmtMs(t.totalMs)}</td><td class="gpu"></td><td class="check">off</td><td></td>`;
     tr.querySelector(".file")!.textContent = filename;
     const groupCell = tr.querySelector<HTMLElement>(".group")!;
-    groupCell.textContent = `s${group.strength} ${group.groupId.slice(0, 8)} #${group.index + 1}/${group.size} m${group.metaGroup}`;
-    groupCell.title = `Strength ${group.strength}\nPlot group ID ${group.groupId}\nPlot ${group.index + 1} of ${group.size} in this group (plot index ${group.index})\nMeta group ${group.metaGroup}`;
+    const ofSize = group.size ? `/${group.size}` : "";
+    groupCell.textContent = `s${group.strength} ${group.groupId.slice(0, 8)} #${group.index + 1}${ofSize} m${group.metaGroup}`;
+    groupCell.title = `Strength ${group.strength}\nPlot group ID ${group.groupId}\nPlot index ${group.index}${group.size ? ` (plot ${group.index + 1} of ${group.size} in this batch)` : ", added to an existing group"}\nMeta group ${group.metaGroup}`;
     const phaseNames = ["hash", "sort", "pairs", "post sort", "misc"];
     tr.title = ["Xs", "T1", "T2", "T3"]
       .map((name, i) => `${name} ${fmtMs(t.tablesMs[i])}: ` + t.phasesMs[i].map((ms, p) => (ms ? `${phaseNames[p]} ${fmtMs(ms)}` : "")).filter(Boolean).join(", "))
@@ -274,11 +330,83 @@ export async function start() {
     return { link, checkCell: tr.querySelector<HTMLElement>(".check")! };
   };
 
+  let cont: ContinueGroup | null = null;
+  const contPanel = $<HTMLElement>("#continue-panel");
+  const contInfo = $<HTMLElement>("#cont-info");
+  const contStart = $<HTMLInputElement>("#cont-start");
+  const contPick = $<HTMLSelectElement>("#cont-pick");
+  const syncGroupMode = () => {
+    contPanel.hidden = readSettings(form).groupKeys !== "continue";
+  };
+  syncGroupMode();
+  form.addEventListener("change", syncGroupMode);
+  if (!caps.dirPicker) $<HTMLElement>("#cont-dir").hidden = true;
+
+  const showCont = () => {
+    if (!cont) {
+      contInfo.textContent = "No group chosen yet.";
+      return;
+    }
+    // Start after the highest index seen. Gaps are left alone, since plots with those
+    // indexes may exist elsewhere.
+    contStart.value = String(cont.used.size ? Math.max(...cont.used) + 1 : 0);
+    contInfo.textContent =
+      `Group ${cont.groupId.slice(0, 16)}…, meta group ${cont.metaGroup}, strength ${cont.strength}, ` +
+      `${cont.plots} plot${cont.plots === 1 ? "" : "s"} found, indexes in use: ${[...cont.used].sort((a, b) => a - b).join(", ") || "none"}. ` +
+      `Farmer ${cont.farmerKey.slice(0, 12)}…, pool ${cont.pool.slice(0, 16)}…`;
+  };
+  showCont();
+
+  // Groups are keyed by group ID and meta group: staggered groups share the ID.
+  const loadGroups = async (files: { file: File }[]) => {
+    const groups = new Map<string, ContinueGroup>();
+    for (const { file } of files) {
+      const info = await readPlotInfo(file);
+      if (!info) continue;
+      const key = `${info.groupId}:${info.metaGroup}`;
+      const g = groups.get(key) ?? {
+        memo: info.memo, strength: info.strength, metaGroup: info.metaGroup, groupId: info.groupId,
+        farmerKey: info.farmerKey, pool: info.pool, used: new Set<number>(), plots: 0,
+      };
+      g.used.add(info.index);
+      g.plots++;
+      groups.set(key, g);
+    }
+    const list = [...groups.values()].sort((a, b) => b.plots - a.plots);
+    contPick.innerHTML = "";
+    list.forEach((g, i) => contPick.add(new Option(`${g.groupId.slice(0, 16)}… meta ${g.metaGroup}, ${g.plots} plots`, String(i))));
+    $<HTMLElement>("#cont-pick-label").hidden = list.length < 2;
+    contPick.onchange = () => {
+      cont = list[Number(contPick.value)] ?? null;
+      showCont();
+    };
+    cont = list[0] ?? null;
+    if (!cont) contInfo.textContent = "No readable plots found there.";
+    else showCont();
+  };
+  $<HTMLButtonElement>("#cont-dir").addEventListener("click", async () => {
+    try {
+      const d = await (window as unknown as { showDirectoryPicker(o: object): Promise<FileSystemDirectoryHandle> })
+        .showDirectoryPicker({ id: "plots", mode: "read" });
+      contInfo.textContent = "Reading plots…";
+      await loadGroups(await walkPlots(d));
+    } catch {
+      // Picker closed.
+    }
+  });
+  const contFile = $<HTMLInputElement>("#cont-file");
+  contFile.addEventListener("change", async () => {
+    await loadGroups(Array.from(contFile.files ?? [], (file) => ({ file })));
+    contFile.value = "";
+  });
+
   form.addEventListener("submit", async (ev) => {
     ev.preventDefault();
     if (running) return;
     const s = readSettings(form);
-    const errors = validate(s, caps);
+    const continuing = s.groupKeys === "continue";
+    const errors = validate(s, caps, continuing);
+    if (continuing && !cont) errors.form = "Choose the group to add to, or pick another plot group option.";
     form.querySelectorAll<HTMLElement>(".err[data-for]").forEach((el) => {
       el.textContent = errors[el.dataset.for!] ?? "";
     });
@@ -324,26 +452,46 @@ export async function start() {
     // after 16 groups the meta groups would repeat, so a new key starts.
     const groupsPerKey = s.groupKeys === "shared" ? 16 : 1;
     let seed = new Uint8Array(32);
+    const group0 = continuing ? cont : null;
+    let nextIndex = Math.max(0, Number(contStart.value) || 0);
     for (let i = 0; s.count === 0 || i < s.count; i++) {
       if (stopAfterCurrent) break;
-      const plotIndex = i % s.groupSize;
-      const groupNumber = Math.floor(i / s.groupSize);
-      const groupInKey = groupNumber % groupsPerKey;
-      if (plotIndex === 0 && groupInKey === 0) {
-        seed.fill(0);
-        seed = crypto.getRandomValues(new Uint8Array(32));
+      let plotIndex: number;
+      let metaGroup: number;
+      let strength = s.strength;
+      let d;
+      if (group0) {
+        // Next index not already in the group.
+        while (group0.used.has(nextIndex)) nextIndex++;
+        if (nextIndex > 65535) {
+          statusText.textContent = "This group has no free plot indexes left.";
+          break;
+        }
+        plotIndex = nextIndex;
+        metaGroup = group0.metaGroup;
+        strength = group0.strength;
+        d = derive_from_memo(group0.memo, strength, plotIndex, metaGroup);
+        group0.used.add(plotIndex);
+        group0.plots++;
+      } else {
+        plotIndex = i % s.groupSize;
+        const groupInKey = Math.floor(i / s.groupSize) % groupsPerKey;
+        if (plotIndex === 0 && groupInKey === 0) {
+          seed.fill(0);
+          seed = crypto.getRandomValues(new Uint8Array(32));
+        }
+        metaGroup = (s.metaGroup + 16 * groupInKey) % 256;
+        d = derive(seed, s.farmerKey, s.poolMode === "pk" ? s.poolKey : "", s.poolMode === "contract" ? s.poolAddress : "", strength, plotIndex, metaGroup);
       }
-      const metaGroup = (s.metaGroup + 16 * groupInKey) % 256;
-      const d = derive(seed, s.farmerKey, s.poolMode === "pk" ? s.poolKey : "", s.poolMode === "contract" ? s.poolAddress : "", s.strength, plotIndex, metaGroup);
       const filename = `plot-k${s.k}-${d.plot_id_hex}.plot2`;
-      const group = { strength: s.strength, groupId: d.plot_group_id_hex, index: plotIndex, size: s.groupSize, metaGroup };
+      const group = { strength, groupId: d.plot_group_id_hex, index: plotIndex, size: group0 ? 0 : s.groupSize, metaGroup };
       let plotSink: Sink = sink;
       if (sink.kind === "dir" && s.groupFolders) {
         // Staggered groups share a group ID, so the meta group is part of the folder name.
         plotSink = { kind: "dir", dir: await sink.dir.getDirectoryHandle(`group-${d.plot_group_id_hex.slice(0, 16)}-m${metaGroup}`, { create: true }) };
       }
       const job: PlotJob = {
-        k: s.k, strength: s.strength, plotIndex, metaGroup, plotId: d.plot_id, memo: d.memo,
+        k: s.k, strength, plotIndex, metaGroup, plotId: d.plot_id, memo: d.memo,
         testnet: s.network === "testnet", threads: s.threads, gpu: s.gpu, filename, sink: plotSink,
       };
       d.free();
@@ -361,7 +509,7 @@ export async function start() {
         if (file) {
           checkCell.textContent = "queued";
           checked = validator
-            .check(file, { challenges: s.autoChecks, network: s.network, expectFarmerKey: s.farmerKey, gpu: s.gpu }, (p) => {
+            .check(file, { challenges: s.autoChecks, network: s.network, expectFarmerKey: group0?.farmerKey ?? s.farmerKey, gpu: s.gpu }, (p) => {
               checkCell.textContent = `${p.done}/${p.total}…`;
             })
             .then((r) => renderCheckCell(checkCell, r));
@@ -462,19 +610,6 @@ function setupValidateSection(validator: Validator, settings: () => Settings, di
     }
   };
 
-  // Lists .plot2 files under dir, including subfolders, with their relative paths.
-  const walk = async (d: FileSystemDirectoryHandle, prefix = ""): Promise<{ file: File; path: string }[]> => {
-    const out: { file: File; path: string }[] = [];
-    for await (const entry of (d as unknown as { values(): AsyncIterable<FileSystemHandle> }).values()) {
-      if (entry.kind === "directory") {
-        out.push(...(await walk(entry as FileSystemDirectoryHandle, `${prefix}${entry.name}/`)));
-      } else if (entry.name.endsWith(".plot2")) {
-        out.push({ file: await (entry as FileSystemFileHandle).getFile(), path: prefix + entry.name });
-      }
-    }
-    return out;
-  };
-
   input.addEventListener("change", () => {
     run(Array.from(input.files ?? [], (file) => ({ file, path: file.name })));
     input.value = "";
@@ -483,7 +618,7 @@ function setupValidateSection(validator: Validator, settings: () => Settings, di
     try {
       const d = await (window as unknown as { showDirectoryPicker(o: object): Promise<FileSystemDirectoryHandle> })
         .showDirectoryPicker({ id: "plots", mode: "read" });
-      const files = await walk(d);
+      const files = await walkPlots(d);
       files.sort((a, b) => a.path.localeCompare(b.path));
       run(files);
     } catch {
