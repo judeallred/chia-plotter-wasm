@@ -16,11 +16,14 @@ export interface PlotJob {
   memo: Uint8Array;
   testnet: boolean;
   threads: number;
-  // Use WebGPU for g(x) when available. The CPU is used if this is off or the GPU fails.
-  gpu: boolean;
+  // Use WebGPU when available: for g(x) and all table pairs ("gpu"), or for g(x) with table
+  // pairs split between CPU and GPU ("hybrid"). The CPU is used if off or the GPU fails.
+  gpu: GpuMode;
   filename: string;
   sink: Sink;
 }
+
+export type GpuMode = "off" | "gpu" | "hybrid";
 
 export type ToWorker =
   | { type: "plot"; job: PlotJob }

@@ -42,3 +42,4 @@ EXPORT_FN int32_t gpu_match_target_bits(int32_t k, int32_t strength, int32_t tab
     ProofParams params(id, uint8_t(k), uint8_t(strength), 0);
     return static_cast<int32_t>(params.get_num_match_target_bits(table_id));
 }
+

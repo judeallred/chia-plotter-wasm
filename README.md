@@ -46,13 +46,15 @@ What goes into a plot (mirrored in `keys/src/lib.rs`, checked against the Python
 Plotting is fully in memory. Times on an M4 Pro (14 cores, 24 GB), same plot ID and memo,
 all outputs byte identical (`tools/bench.sh`, browser numbers from the page):
 
-| k | file | peak RAM | `chia_rs` (create2) | native glue | WASM in Node | WASM in Chrome |
-| --- | --- | --- | --- | --- | --- | --- |
-| 20 | 3 MB | 75 MB | 0.9 s | 0.5 s | 1.0 s | |
-| 22 | 12 MB | 0.26 GB | 1.1 s | 1.4 s | 2.5 s | 2.2 s |
-| 24 | 53 MB | 1.0 GB | 8.0 s | 7.9 s | 7.9 s | about 8 s |
-| 26 | 230 MB | 2.2 GB | 56 s | 52 s | 180 s | 31 s |
-| 28 | 989 MB | 8.7 GB (13 GB footprint) | 73 s | 78 s | | 2 min 10 s, 10.9 GB heap |
+| k | file | peak RAM | `chia_rs` (create2) | native glue | WASM in Node | WASM in Chrome | Chrome with WebGPU |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 20 | 3 MB | 75 MB | 0.9 s | 0.5 s | 1.0 s | | 0.3 s |
+| 22 | 12 MB | 0.26 GB | 1.1 s | 1.4 s | 2.5 s | 2.2 s | 0.7 s |
+| 24 | 53 MB | 1.0 GB | 8.0 s | 7.9 s | 7.9 s | about 8 s | about 2 s |
+| 26 | 230 MB | 2.2 GB | 56 s | 52 s | 180 s | 31 s | 4.8 s |
+| 28 | 989 MB | 8.7 GB (13 GB footprint) | 73 s | 78 s | | 2 min 10 s, 10.9 GB heap | 41 s |
+
+At strength 6, k22 takes 22 s on the CPU and 2.9 s with WebGPU.
 
 Caveats: this machine was swapping during these runs (a Docker VM was holding about 16 GB),
 which hurts the k26 native and Node numbers. Chrome kept its memory resident and was fastest
@@ -69,11 +71,39 @@ instead of moving it, which pushed the browser heap to 13 GB. `core/CMakeLists.t
 generates a copy of `Plotter.hpp` with `std::move`, which brings the peak to 10.9 GB. WASM
 memory never shrinks, so the page drops the plotter worker when it goes idle.
 
-Validating k28 in the browser is slow (about 90 s for 30 challenges, versus 5 s for
-chia_rs). Nearly all of it is the solver, which hashes every x with `g(x)`, 32 AES rounds,
-for each proof. WASM has no AES instructions, so this runs in software. Moving `g(x)` to
-WebGPU is the obvious next step and would also speed up the plotter's Xs phase (7 s in the
-browser, 1 s natively).
+## WebGPU
+
+WGSL is the only GPU language browsers run (no CUDA, OpenCL or SPIR-V), and the work here is
+integer AES, which WGSL handles fine. What runs on the GPU (`web/src/lib/gpu.ts`, requests
+from C++ through `core/src/gpu_bridge.hpp`):
+
+- Xs: `g(x)` for every x.
+- Table pairs, per section (`core/src/table_gpu.hpp` hooks upstream's
+  `TableConstructorGeneric`): a bucket directory over the right side, then
+  `find_candidates` (matching target hash, directory lookup) writes (left, right) index
+  pairs, and `pair_test`, launched with an indirect dispatch, runs one pairing hash per
+  candidate and writes the table's output struct (T1Pairing, T2Pairing, or the Feistel
+  encoded proof fragment). Splitting the passes matters: each left entry has a varying
+  number of matches, and in one kernel every SIMD group waits for its unluckiest lane.
+- Validation: the solver's all-x `g(x)` bitmask filter.
+
+The CPU still does the radix sorts between tables and writes the file. Every plot starts
+with a self test against the CPU, any failure falls back to the CPU, and output is byte
+identical either way (checked against `chia_rs.create_v2_plot` at k20 to k28).
+
+Measured on an M4 Pro: the T-table AES does about 790 M `g(x)` per second with a single
+1 KB table and workgroups of 32 (630 M with four tables and 256). The pair kernels run
+close to that rate, so the GPU side is AES bound. At k28 memory is the constraint: the
+plotter heap is about 11 GB, so GPU uploads go in 256 MB pieces and GPU mode writes pairs
+straight into the plotter's output instead of holding them. Before that, k28 swapped and
+took 1 min 49 s.
+
+The hybrid mode (CPU and GPU split each section, rebalanced after every section) works
+but is slower than the GPU alone on Apple silicon: with both busy, each side ran at about
+half speed (shared memory bandwidth and power). It may help with a discrete GPU.
+
+Validating k28 in the browser was slow on the CPU (about 90 s for 30 challenges, versus 5
+s for chia_rs), almost all in the solver's `g(x)` pass, which now runs on the GPU.
 
 ## Layout
 

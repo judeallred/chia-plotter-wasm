@@ -5,7 +5,7 @@
 // smaller k sizes use the wasm32 build. Plotting itself runs on a pthread inside the
 // module, so this worker stays responsive and polls for progress.
 
-import { GpuG, selfTest, serve, type GpuHost } from "./gpu";
+import { GpuG, pairStats, selfTest, serve, type GpuHost } from "./gpu";
 import type { FromWorker, PlotJob, ToWorker } from "./protocol";
 
 declare const self: DedicatedWorkerGlobalScope;
@@ -40,6 +40,8 @@ interface Pos2Module {
   _pos2w_gpu_enabled(): number;
   _pos2w_gpu_total_ms(): number;
   _pos2w_gpu_reset_total(): void;
+  _pos2w_gpu_set_pairs_mode(mode: number): void;
+  _pos2w_gpu_split(table: number): number;
   _pos2w_phase_ms(table: number, phase: number): number;
 }
 
@@ -132,19 +134,23 @@ async function runPlot(job: PlotJob) {
   const fromPtr = (p: number | bigint) => (typeof p === "bigint" ? Number(p) : p >>> 0);
 
   M._pos2w_reset();
-  M._pos2w_set_threads(job.threads);
+  // In hybrid mode this worker's own thread feeds the GPU while the plot threads work, so
+  // leave it a core.
+  M._pos2w_set_threads(job.gpu === "hybrid" ? Math.max(1, job.threads - 1) : job.threads);
+  Object.assign(pairStats, { uploadMs: 0, gpuMs: 0, copyMs: 0, requests: 0 });
 
   // Attach the GPU for g(x) if allowed, available, and it agrees with the CPU on a sample.
   M._pos2w_gpu_enable(0);
   M._pos2w_gpu_reset_total();
-  let gpuNote = job.gpu ? "" : "GPU off in settings";
+  let gpuNote = job.gpu !== "off" ? "" : "GPU off in settings";
   let service: { stop(): void } | null = null;
-  if (job.gpu) {
+  M._pos2w_gpu_set_pairs_mode(job.gpu === "gpu" ? 1 : job.gpu === "hybrid" ? 2 : 0);
+  if (job.gpu !== "off") {
     try {
       if (gpu === undefined || gpu?.lost) gpu = await GpuG.create();
       if (!gpu) {
         gpuNote = "no WebGPU adapter";
-      } else if (await selfTest(gpu, M as unknown as GpuHost, "pos2w", big, job.plotId, job.k, job.testnet, job.strength)) {
+      } else if (await selfTest(gpu, M as unknown as GpuHost, "pos2w", big, job.plotId, job.k, job.testnet, job.strength, true)) {
         service = serve(gpu, M as unknown as GpuHost, "pos2w", (m) => console.warn(m));
         M._pos2w_gpu_enable(1);
         gpuNote = gpu.adapterInfo || "GPU";
@@ -194,6 +200,14 @@ async function runPlot(job: PlotJob) {
   }
   const gpuMs = M._pos2w_gpu_total_ms();
   if (service && !M._pos2w_gpu_enabled()) gpuNote = "GPU failed during the plot, finished on CPU";
+  else if (service && job.gpu === "hybrid") {
+    const share = [1, 2, 3].map((t) => `${Math.round(M._pos2w_gpu_split(t) * 100)}%`).join("/");
+    gpuNote += `, hybrid: GPU did ${share} of tables 1/2/3`;
+  }
+  if (pairStats.requests) {
+    const sec = (ms: number) => `${(ms / 1000).toFixed(1)} s`;
+    gpuNote += `, table pairs: ${sec(pairStats.uploadMs)} upload, ${sec(pairStats.gpuMs)} GPU, ${sec(pairStats.copyMs)} copy back`;
+  }
   M._pos2w_gpu_enable(0);
   service?.stop();
   const status = M._pos2w_status();

@@ -379,6 +379,11 @@ POS2W_EXPORT int32_t pos2w_threads() { return static_cast<int32_t>(pos2w::TaskPo
 #define gpu_cpu_match_target pos2w_gpu_cpu_match_target
 #define gpu_match_target_bits pos2w_gpu_match_target_bits
 #include "gpu_exports.inc"
+#define gpu_set_pairs_mode pos2w_gpu_set_pairs_mode
+#define gpu_split pos2w_gpu_split
+#define gpu_feistel_keys pos2w_gpu_feistel_keys
+#define gpu_cpu_pair pos2w_gpu_cpu_pair
+#include "gpu_plot_exports.inc"
 
 // Milliseconds the last plot spent in one phase of one table. table is 0 (Xs) to 3, phase is
 // 0 hash, 1 sort, 2 find pairs, 3 post sort, 4 misc.

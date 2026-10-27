@@ -37,6 +37,12 @@ import "../styles/app.css";
         </div>
 
         <label>
+          Drive size (TB)
+          <input name="driveTB" type="number" min="0.1" step="0.1" value="4" />
+          <small>The size of the drive you are filling. Only used for the estimates and calculations on this page, like how many k28 plots fit and how often a drive is read. It never limits plotting. <span class="js-drive-fits"></span></small>
+        </label>
+
+        <label>
           Farmer public key
           <input class="mono" name="farmerKey" required autocomplete="off" spellcheck="false"
             placeholder="96 hex characters, from `chia keys show`" />
@@ -92,8 +98,8 @@ import "../styles/app.css";
               pass have to be read from disk. At strength 2 a plot passes about 1 time in 512.
             </p>
             <p>
-              With no groups, every plot passes at its own random times. A 4 TB drive holds about
-              4,000 k28 plots, so on average about 8 of them pass at every signage point. The drive
+              With no groups, every plot passes at its own random times. A <span class="js-drive-tb">4 TB</span> drive holds about
+              <span class="js-drive-plots">4,000</span> k28 plots, so on average <span class="js-drive-ungrouped">about 8 of them pass at every signage point</span>. The drive
               is read every few seconds, all day, and can never spin down.
             </p>
             <p>
@@ -168,15 +174,15 @@ import "../styles/app.css";
               signage point. In this plot format each plot is its own file, and a lookup is about 4
               random reads, one per challenge set. A hard drive does roughly 100 to 200 random
               reads a second, so it can serve about 25 to 50 plots per signage point, and Chia warns
-              when a lookup takes longer than 8 seconds. A whole 4 TB drive as one group (about
-              4,000 plots, 16,000 reads at once) is too much. These are estimates for a typical
+              when a lookup takes longer than 8 seconds. <span class="js-drive-one-group">A whole 4 TB drive as one group (about
+              4,000 plots, 16,000 reads at once) is too much.</span> These are estimates for a typical
               drive, not measurements.
             </p>
             <p>
               CHIP-49's answer is to give each plot group on a drive its own meta group. With meta
               groups 0 to 15 under one plot key, all 16 pass in the same window, so the drive wakes
-              as rarely as one group, but each passes at a different signage point, so a 4,000 plot
-              drive serves about 250 plots per signage point instead of 4,000. That is the hard
+              as rarely as one group, but each passes at a different signage point, so a <span class="js-drive-plots">4,000</span> plot
+              drive serves about <span class="js-drive-per-meta">250</span> plots per signage point instead of <span class="js-drive-plots">4,000</span>. That is the hard
               drive setup above. CHIP-48 also describes a future group file format that stores a
               group's plots together so a pass costs a few reads for the whole group. That comes
               with the upcoming group plotter, not this format.
@@ -186,20 +192,20 @@ import "../styles/app.css";
               <dt>SSDs, a NAS, or anything that never sleeps</dt>
               <dd>No groups. Each plot passes on its own and an SSD handles the reads easily. This
                 is the same as <code>chia plots create2</code>.</dd>
-              <dt>A 4 TB hard drive that should sleep</dt>
-              <dd>Hard drive that sleeps, 16 meta groups, strength 6. The drive is needed about once
-                a day for one window of about 2.5 minutes, serving about 250 plots at each of 16
-                signage points. At strength 4 it is about 4.5 times a day.</dd>
+              <dt>A <span class="js-drive-tb">4 TB</span> hard drive that should sleep</dt>
+              <dd>Hard drive that sleeps, <span class="js-drive-metas">16 meta groups</span>, strength 6. The drive is needed about <span class="js-drive-wakes">once
+                a day for one window</span> of about 2.5 minutes, serving about <span class="js-drive-per-meta-rec">250</span> plots at each of
+                <span class="js-drive-sps">16</span> signage points. At strength 4 it is about 4 times as often.</dd>
               <dt>Several hard drives</dt>
               <dd>Plot each drive with Hard drive that sleeps and Start a new drive, so every drive
                 has its own plot key. Drives then wake independently of each other.</dd>
               <dt>A drive you already started</dt>
               <dd>Hard drive that sleeps, Add to a drive I already plotted, and choose the drive's
                 plot folder. New plots continue the same key and fill the meta groups evenly.</dd>
-              <dt>Bigger than 4 TB</dt>
+              <dt>Very large drives</dt>
               <dd>About 250 plots per meta group per signage point is already near what a hard drive
-                can serve, so for much larger drives use more meta groups (32 for 8 TB). The drive
-                then wakes for two windows instead of one.</dd>
+                can serve, so drives over about 4,000 k28 plots (4 TB) need more meta groups: 32 for
+                8 TB, 48 for 12 TB. Each extra block of 16 meta groups adds one more window of wakeups.</dd>
             </dl>
             <p>
               Pass times are also predictable: the filter for a window uses a challenge from a sub
@@ -226,18 +232,11 @@ import "../styles/app.css";
               <p class="hint">Choose the drive's whole plot folder (subfolders are searched) so the page sees every plot. New plots start above the highest plot index it finds, so picking only some files is still safe as long as the newest plots are among them.</p>
               <p id="drive-info" class="hint"></p>
             </div>
-            <div class="row">
-              <label>
-                Meta groups per drive
-                <input name="driveMetas" type="number" min="1" max="256" value="16" />
-                <small>16 is one block: all of them pass in the same window, one per signage point. More than 16 spans several blocks, which spreads the load further but wakes the drive more often.</small>
-              </label>
-              <label>
-                Plots on the drive when full
-                <input name="drivePlots" type="number" min="1" value="4000" />
-                <small>Only used to estimate load. A 4 TB drive holds about 4,000 k28 plots.</small>
-              </label>
-            </div>
+            <label>
+              Meta groups per drive
+              <input name="driveMetas" type="number" min="1" max="256" value="16" />
+              <small>16 is one block: all of them pass in the same window, one per signage point. More than 16 spans several blocks, which spreads the load further but wakes the drive more often.</small>
+            </label>
             <p id="drive-rate" class="group-rate"></p>
           </div>
           <p class="option-heading">Custom</p>
@@ -328,10 +327,11 @@ import "../styles/app.css";
         <label>
           GPU acceleration
           <select name="gpu">
-            <option value="on" selected>Use WebGPU when available</option>
+            <option value="gpu" selected>GPU (WebGPU)</option>
+            <option value="hybrid">CPU and GPU together</option>
             <option value="off">CPU only</option>
           </select>
-          <small>Runs the g(x) hash on the GPU. Each plot first checks the GPU against the CPU on a sample, and falls back to the CPU if they differ or anything fails. Plots are identical either way.</small>
+          <small>The GPU runs the g(x) hash and finds every table's pairs, about 3 to 7 times faster than the CPU. <em>CPU and GPU together</em> also gives part of each table to the CPU, balanced so both finish at the same time. That can help with a separate graphics card, but on laptops where the CPU and GPU share memory and power (like Apple silicon) it is slower than the GPU alone. Each plot first checks the GPU against the CPU on a sample, and falls back to the CPU if they differ or anything fails. Plots are identical either way.</small>
         </label>
 
         <label>

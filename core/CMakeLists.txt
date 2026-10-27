@@ -35,12 +35,17 @@ endfunction()
 # a patched header is only used consistently if its neighbours come from gen/ too.
 file(COPY ${POS2_DIR}/src/plot ${POS2_DIR}/src/solve DESTINATION ${GEN_DIR})
 
-# TableConstructorGeneric.hpp: try the GPU for the matching target hash before the CPU loop.
+# TableConstructorGeneric.hpp: give part of each section to the GPU (see table_gpu.hpp).
+# The CPU loop starts after the GPU's share, and the GPU's pairs are collected once the
+# section's CPU work is done.
 file(READ ${GEN_DIR}/plot/TableConstructorGeneric.hpp tcg_src)
 pos2w_edit(tcg_src "#include \"pos/ProofValidator.hpp\"" "#include \"pos/ProofValidator.hpp\"\n#include \"table_gpu.hpp\"")
 pos2w_edit(tcg_src
-  "parallel_for_range(uint64_t(0),\n                    uint64_t(l_count),"
-  "std::size_t const pos2w_done = pos2w::gpu_match_targets(params_, int(table_id_), previous_table_pairs.data() + l_start, l_ptr, l_count, match_key_r);\n                parallel_for_range(uint64_t(pos2w_done),\n                    uint64_t(l_count),")
+  "uint64_t const l_start_u64 = prefix.row(section_l)[0];"
+  "pos2w::GpuSection pos2w_gpu(*this, params_, int(table_id_), std::span<PairingCandidate const>(previous_table_pairs.data(), previous_table_pairs.size()), prefix.row(section_l), prefix.row(section_r), num_match_keys, out_pairs, out_count);\n            uint64_t const l_start_u64 = prefix.row(section_l)[0] + pos2w_gpu.gpu_count();")
+pos2w_edit(tcg_src
+  "            section_l = section_r;"
+  "            timings.find_pairs_time_ms += pos2w_gpu.finish();\n            section_l = section_r;")
 file(WRITE ${GEN_DIR}/plot/TableConstructorGeneric.hpp "${tcg_src}")
 
 file(READ ${GEN_DIR}/plot/Plotter.hpp plotter_src)

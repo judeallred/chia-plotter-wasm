@@ -1,7 +1,7 @@
 // Page logic: settings form, environment checks, and the plot queue.
 
 import initKeys, { check_address, check_public_key, derive, derive_from_memo, inspect_memo } from "./keys-pkg/plot_keys.js";
-import type { FromWorker, PlotJob, Sink, Timings } from "./protocol";
+import type { FromWorker, GpuMode, PlotJob, Sink, Timings } from "./protocol";
 import { loadDir, saveDir } from "./saved-dir";
 import { listSessions, saveSession, startSession } from "./sessions";
 import { startStats, type PlotStatsSource } from "./stats";
@@ -20,14 +20,16 @@ interface Settings {
   network: "mainnet" | "testnet";
   output: "dir" | "download";
   autoChecks: number;
-  gpu: boolean;
+  // hybrid: tables split between CPU and GPU. gpu: tables on the GPU. off: CPU only.
+  gpu: GpuMode;
   groupSize: number;
   metaGroup: number;
   groupFolders: boolean;
   groupKeys: "none" | "drive" | "separate" | "shared" | "continue";
   driveStart: "new" | "continue";
   driveMetas: number;
-  drivePlots: number;
+  // Size of the drive being filled, in TB. Only used for estimates on the page.
+  driveTB: number;
 }
 
 const $ = <T extends Element>(sel: string) => document.querySelector(sel) as T;
@@ -78,14 +80,14 @@ function readSettings(form: HTMLFormElement): Settings {
     network: s("network") === "testnet" ? "testnet" : "mainnet",
     output: s("output") === "dir" ? "dir" : "download",
     autoChecks: Number(s("autoChecks")),
-    gpu: s("gpu") !== "off",
+    gpu: s("gpu") === "off" ? "off" : s("gpu") === "hybrid" ? "hybrid" : "gpu",
     groupSize: Number(s("groupSize")),
     metaGroup: Number(s("metaGroup")),
     groupFolders: f.get("groupFolders") === "on",
     groupKeys: (["drive", "separate", "shared", "continue"] as const).find((v) => v === s("groupKeys")) ?? "none",
     driveStart: s("driveStart") === "continue" ? "continue" : "new",
     driveMetas: Number(s("driveMetas")),
-    drivePlots: Number(s("drivePlots")),
+    driveTB: Number(s("driveTB")),
   };
 }
 
@@ -101,6 +103,11 @@ function applySettings(form: HTMLFormElement, s: Partial<Settings> | Record<stri
     });
   }
 }
+
+// A k28 plot is about 1 GB, so a 4 TB drive holds about 4,000.
+const K28_PLOT_BYTES = 1e9;
+const drivePlotsOf = (s: Settings) => Math.max(1, Math.round(((s.driveTB > 0 ? s.driveTB : 4) * 1e12) / K28_PLOT_BYTES));
+const fmtTB = (tb: number) => `${(tb > 0 ? tb : 4).toLocaleString(undefined, { maximumFractionDigits: 1 })} TB`;
 
 function validate(s: Settings, caps: ReturnType<typeof capabilities>, continuing: boolean): Record<string, string> {
   const errors: Record<string, string> = {};
@@ -248,9 +255,9 @@ export async function start() {
   const history = $<HTMLTableSectionElement>("#history tbody");
 
   applySettings(form, { threads: caps.threads, output: "download" });
-  // Settings store gpu as a boolean, the form uses "on" and "off". Default to the GPU.
+  // Older sessions stored gpu as a boolean. Anything unknown becomes the default.
   const applySaved = (saved: Record<string, unknown>) =>
-    applySettings(form, { ...saved, gpu: saved.gpu === false ? "off" : "on" });
+    applySettings(form, { ...saved, gpu: saved.gpu === false ? "off" : saved.gpu === "hybrid" ? "hybrid" : saved.gpu === "off" ? "off" : "gpu" });
   // Settings used to be shared by all tabs under this key. Sessions replace it.
   localStorage.removeItem("pos2-plotter-settings");
   const session = await startSession();
@@ -271,6 +278,37 @@ export async function start() {
   syncOutput();
   form.addEventListener("change", syncOutput);
 
+  // Drive size estimates in the settings and the plot groups explainer. Every number there
+  // follows the Drive size field.
+  const syncDriveText = () => {
+    const s = readSettings(form);
+    const n = drivePlotsOf(s);
+    const tb = fmtTB(s.driveTB);
+    const set = (cls: string, text: string) => form.querySelectorAll(`.${cls}`).forEach((el) => (el.textContent = text));
+    set("js-drive-fits", `A ${tb} drive holds about ${n.toLocaleString()} k28 plots.`);
+    set("js-drive-tb", tb);
+    set("js-drive-plots", n.toLocaleString());
+    const ungrouped = n / 512;
+    set("js-drive-ungrouped", ungrouped >= 1
+      ? `about ${ungrouped.toFixed(ungrouped < 10 ? 1 : 0)} of them pass at every signage point`
+      : `one of them passes about every ${Math.round(9.375 / ungrouped)} seconds`);
+    const reads = n * 4;
+    const secs = reads / 150;
+    set("js-drive-one-group", `A whole ${tb} drive as one group (about ${n.toLocaleString()} plots, ${reads.toLocaleString()} reads at once) ` +
+      (secs > 8 ? `is too much, about ${Math.round(secs)} seconds of reads.` : `takes about ${Math.max(1, Math.round(secs))} seconds of reads, which one drive can manage.`));
+    set("js-drive-per-meta", Math.ceil(n / 16).toLocaleString());
+    // About 250 plots per meta group is near what one drive serves in a signage point.
+    const metas = Math.min(256, 16 * Math.max(1, Math.ceil(n / 4000)));
+    const blocks = metas / 16;
+    set("js-drive-metas", `${metas} meta groups`);
+    set("js-drive-wakes", blocks === 1 ? "once a day for one window" : `${blocks} times a day, one window each`);
+    set("js-drive-per-meta-rec", Math.ceil(n / metas).toLocaleString());
+    set("js-drive-sps", String(metas));
+  };
+  form.addEventListener("input", syncDriveText);
+  form.addEventListener("change", syncDriveText);
+  syncDriveText();
+
   // Expected filter passes for the chosen strength, from today's consensus constants:
   // 64 signage points per 600 s sub slot, filter bits min(9 + strength - 2, 13).
   const readRate = $<HTMLElement>("#read-rate");
@@ -284,7 +322,7 @@ export async function start() {
     const perDay = 9216 / 2 ** bits;
     const every = (24 * 60) / perDay;
     const everyText = every >= 60 ? `${(every / 60).toFixed(1)} hours` : `${Math.round(every)} minutes`;
-    const drivePlots = 4000;
+    const drivePlots = drivePlotsOf(s);
     const perSp = drivePlots / 2 ** bits;
     const capped = s.strength > 6 ? " Above strength 6 the filter is capped today, so this is the same as strength 6." : "";
     const drive =
@@ -294,7 +332,7 @@ export async function start() {
     readRate.textContent =
       `Strength ${s.strength} plots will wake about every ${everyText}, about ${perDay.toFixed(perDay < 10 ? 1 : 0)} times a day ` +
       `(it passes 1 in ${(2 ** bits).toLocaleString()} signage points). A group wakes on the same schedule as one plot. ` +
-      `A 4 TB drive of ${drivePlots.toLocaleString()} ungrouped plots has ${drive}.${capped}`;
+      `A ${fmtTB(s.driveTB)} drive of ${drivePlots.toLocaleString()} ungrouped k28 plots has ${drive}.${capped}`;
   };
 
   // When grouping, how often each group (and so its drive) gets read. Uses the existing
@@ -327,22 +365,22 @@ export async function start() {
       (s.groupKeys === "continue" ? " Strength comes from the existing group." : "");
   };
 
-  // File size, peak plotter memory and plotting time measured in Chrome on an M4 Pro (14
-  // cores), CPU path. Shown under the size field.
-  const kInfo: Record<number, { file: string; memory: string; time: string }> = {
-    28: { file: "about 1 GB", memory: "about 11 GB", time: "about 2 minutes" },
-    26: { file: "about 230 MB", memory: "about 3 GB", time: "about 30 seconds" },
-    24: { file: "about 53 MB", memory: "about 0.7 GB", time: "about 7 seconds" },
-    22: { file: "about 12 MB", memory: "about 0.3 GB", time: "about 2 seconds" },
-    20: { file: "about 3 MB", memory: "under 0.1 GB", time: "under a second" },
-    18: { file: "about 0.6 MB", memory: "under 0.1 GB", time: "under a second" },
+  // File size, peak plotter memory and plotting time at strength 2, measured in Chrome on an
+  // M4 Pro (14 cores, 20 core GPU), with the GPU and CPU only. Shown under the size field.
+  const kInfo: Record<number, { file: string; memory: string; gpu: string; cpu: string }> = {
+    28: { file: "about 1 GB", memory: "about 11 GB", gpu: "about 40 seconds", cpu: "2 minutes" },
+    26: { file: "about 230 MB", memory: "about 3 GB", gpu: "about 5 seconds", cpu: "30 seconds" },
+    24: { file: "about 53 MB", memory: "about 0.7 GB", gpu: "about 2 seconds", cpu: "7 seconds" },
+    22: { file: "about 12 MB", memory: "about 0.3 GB", gpu: "under a second", cpu: "2 seconds" },
+    20: { file: "about 3 MB", memory: "under 0.1 GB", gpu: "under a second", cpu: "under a second" },
+    18: { file: "about 0.6 MB", memory: "under 0.1 GB", gpu: "under a second", cpu: "under a second" },
   };
   const kDetails = $<HTMLElement>("#k-details");
   const syncK = () => {
     const k = readSettings(form).k;
     const i = kInfo[k];
     kDetails.textContent = i
-      ? `Each k${k} plot is ${i.file} on disk, needs ${i.memory} of memory while plotting, and takes ${i.time} at strength 2 on a fast laptop.` +
+      ? `Each k${k} plot is ${i.file} on disk, needs ${i.memory} of memory while plotting, and takes ${i.gpu} at strength 2 on a fast laptop with the GPU (${i.cpu} on the CPU only).` +
         (k >= 28 && !caps.memory64 ? " This browser lacks WebAssembly memory64, which k28 needs." : "")
       : "";
   };
@@ -555,7 +593,7 @@ export async function start() {
     const wakesPerDay = (9216 / 2 ** bits) * blocks;
     const every = (24 * 60) / wakesPerDay;
     const everyText = every >= 60 ? `${(every / 60).toFixed(1)} hours` : `${Math.round(every)} minutes`;
-    const perSp = Math.ceil((s.drivePlots || 4000) / metas);
+    const perSp = Math.ceil(drivePlotsOf(s) / metas);
     const secs = (perSp * 4) / 150;
     driveRate.classList.toggle("low", strength <= 3 || perSp > 300);
     driveRate.textContent =
@@ -868,7 +906,7 @@ export async function start() {
         if (file) {
           checkCell.innerHTML = `<span class="pill pill-muted">queued</span>`;
           checked = validator
-            .check(file, { challenges: s.autoChecks, network: s.network, expectFarmerKey: group0?.farmerKey ?? (driveContinue ? drive?.farmerKey : undefined) ?? s.farmerKey, gpu: s.gpu }, (p) => {
+            .check(file, { challenges: s.autoChecks, network: s.network, expectFarmerKey: group0?.farmerKey ?? (driveContinue ? drive?.farmerKey : undefined) ?? s.farmerKey, gpu: s.gpu !== "off" }, (p) => {
               checkCell.innerHTML = `<span class="pill pill-muted">checking ${p.done}/${p.total}</span>`;
             })
             .then((r) => renderCheckCell(checkCell, r));
@@ -972,7 +1010,7 @@ function setupValidateSection(validator: Validator, settings: () => Settings, di
       const mark = (c?: { ok: boolean; warn?: boolean; detail: string }) =>
         c ? `<span class="${c.ok ? "ok" : c.warn ? "warn" : "fail"}">${c.ok ? "✓" : c.warn ? "!" : "✗"}</span>` : "";
       validator
-        .check(file, { challenges, network, expectFarmerKey: settings().farmerKey || undefined, gpu: settings().gpu }, (p) => {
+        .check(file, { challenges, network, expectFarmerKey: settings().farmerKey || undefined, gpu: settings().gpu !== "off" }, (p) => {
           cell(6, `${p.valid}/${p.found} <small>${p.done}/${p.total}</small>`);
         })
         .then((r) => {
