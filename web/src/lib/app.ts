@@ -260,7 +260,7 @@ export async function start() {
     const s = readSettings(form);
     dirPanel.hidden = !caps.dirPicker || s.output !== "dir";
     // Always shown so plot groups are easy to discover, but only used with groups.
-    groupFoldersNote.textContent = s.groupKeys === "none" ? "Used with plot groups, see Plot groups above." : "";
+    groupFoldersNote.textContent = s.groupKeys === "none" ? "Used with plot groups, see Plot groups above. Without groups every plot has its own key, so plots stay in the chosen folder." : "";
   };
   syncOutput();
   form.addEventListener("change", syncOutput);
@@ -797,10 +797,9 @@ export async function start() {
       const group = { strength, groupId: d.plot_group_id_hex, index: plotIndex, size: group0 || driveState ? 0 : groupSize, metaGroup };
       let plotSink: Sink = sink;
       if (sink.kind === "dir" && s.groupFolders && s.groupKeys !== "none") {
-        // Staggered groups share a group ID, so the meta group is part of the folder name. In
-        // the hard drive layout the whole drive is one key, so it gets one folder.
-        const folder = driveState ? `drive-${d.plot_group_id_hex.slice(0, 16)}` : `group-${d.plot_group_id_hex.slice(0, 16)}-m${metaGroup}`;
-        plotSink = { kind: "dir", dir: await sink.dir.getDirectoryHandle(folder, { create: true }) };
+        // One folder per plot key (group ID). Meta groups of the same key share it, so a hard
+        // drive layout's 16 meta groups, or staggered groups, stay together.
+        plotSink = { kind: "dir", dir: await sink.dir.getDirectoryHandle(`group-${d.plot_group_id_hex.slice(0, 16)}`, { create: true }) };
       }
       const job: PlotJob = {
         k: s.k, strength, plotIndex, metaGroup, plotId: d.plot_id, memo: d.memo,
