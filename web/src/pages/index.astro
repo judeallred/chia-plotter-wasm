@@ -118,6 +118,14 @@ import "../styles/app.css";
             </p>
             <h3>What the meta group is</h3>
             <p>
+              Think of it as a sub-group. Chia's <a href="https://github.com/Chia-Network/chips/pull/161" target="_blank" rel="noopener">CHIP-49</a>
+              nests three levels: a <b>group ID</b> (one plot key, strength and pool) holds up to 256
+              <b>meta groups</b>, and each meta group holds up to 65,536 plots by <b>plot index</b>.
+              Plots in the same group ID and meta group pass the filter together, which is what this
+              page calls a plot group. The name meta group is the protocol's own term
+              (<code>meta_group</code>), and the CHIPs do not explain the choice of word.
+            </p>
+            <p>
               Signage points are grouped into windows of 16, and a group passes at most once per
               window. The <b>meta group</b> is a number from 0 to 255 stored in each plot that
               shifts <i>when</i> a group passes, but only compared with other groups that share the same
@@ -129,8 +137,11 @@ import "../styles/app.css";
               <li>Groups with different plot keys pass at unrelated times, so their meta groups do not matter.</li>
             </ul>
             <p>
-              So the plot group comes first and the meta group only subdivides it: the meta group
+              So the group ID comes first and the meta group only subdivides it: the meta group
               has no meaning except relative to other plots with the same plot key and strength.
+              In CHIP-49's words, plots in a group attract each other and meta groups repel each
+              other. CHIP-49 recommends giving each plot group on the same drive its own meta group,
+              which spreads out the drive's reads and the harvester's CPU work.
             </p>
             <p>
               One limit: the filter only looks at as many bits as its current difficulty. The
@@ -208,7 +219,7 @@ import "../styles/app.css";
             is true today. Explain above has the details and worked examples.
           </p>
           <label>
-            Meta group of the first group
+            Meta group of the first group (a sub-group of the plot key)
             <input name="metaGroup" type="number" min="0" max="255" value="0" />
             <small>0 to 255, stored in each plot. It only matters between groups with the same plot key: values in different blocks of 16 (0 to 15, 16 to 31, …) never share a window, values in the same block share windows but pass at different signage points. For independent groups leave it at 0.</small>
           </label>
