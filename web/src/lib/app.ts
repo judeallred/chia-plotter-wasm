@@ -24,7 +24,7 @@ interface Settings {
   groupSize: number;
   metaGroup: number;
   groupFolders: boolean;
-  groupKeys: "separate" | "shared" | "continue";
+  groupKeys: "none" | "separate" | "shared" | "continue";
 }
 
 const $ = <T extends Element>(sel: string) => document.querySelector(sel) as T;
@@ -79,7 +79,7 @@ function readSettings(form: HTMLFormElement): Settings {
     groupSize: Number(s("groupSize")),
     metaGroup: Number(s("metaGroup")),
     groupFolders: f.get("groupFolders") === "on",
-    groupKeys: s("groupKeys") === "shared" ? "shared" : s("groupKeys") === "continue" ? "continue" : "separate",
+    groupKeys: (["separate", "shared", "continue"] as const).find((v) => v === s("groupKeys")) ?? "none",
   };
 }
 
@@ -336,7 +336,11 @@ export async function start() {
   const contStart = $<HTMLInputElement>("#cont-start");
   const contPick = $<HTMLSelectElement>("#cont-pick");
   const syncGroupMode = () => {
-    contPanel.hidden = readSettings(form).groupKeys !== "continue";
+    const mode = readSettings(form).groupKeys;
+    contPanel.hidden = mode !== "continue";
+    form.querySelectorAll<HTMLElement>("[data-group-modes]").forEach((el) => {
+      el.hidden = !el.dataset.groupModes!.split(" ").includes(mode);
+    });
   };
   syncGroupMode();
   form.addEventListener("change", syncGroupMode);
@@ -451,6 +455,9 @@ export async function start() {
     // and step the meta group by 16, so no two of them pass the filter in the same window;
     // after 16 groups the meta groups would repeat, so a new key starts.
     const groupsPerKey = s.groupKeys === "shared" ? 16 : 1;
+    // Without groups every plot is a group of one with meta group 0, like chia plots create2.
+    const groupSize = s.groupKeys === "none" ? 1 : s.groupSize;
+    const firstMeta = s.groupKeys === "none" ? 0 : s.metaGroup;
     let seed = new Uint8Array(32);
     const group0 = continuing ? cont : null;
     let nextIndex = Math.max(0, Number(contStart.value) || 0);
@@ -474,19 +481,19 @@ export async function start() {
         group0.used.add(plotIndex);
         group0.plots++;
       } else {
-        plotIndex = i % s.groupSize;
-        const groupInKey = Math.floor(i / s.groupSize) % groupsPerKey;
+        plotIndex = i % groupSize;
+        const groupInKey = Math.floor(i / groupSize) % groupsPerKey;
         if (plotIndex === 0 && groupInKey === 0) {
           seed.fill(0);
           seed = crypto.getRandomValues(new Uint8Array(32));
         }
-        metaGroup = (s.metaGroup + 16 * groupInKey) % 256;
+        metaGroup = (firstMeta + 16 * groupInKey) % 256;
         d = derive(seed, s.farmerKey, s.poolMode === "pk" ? s.poolKey : "", s.poolMode === "contract" ? s.poolAddress : "", strength, plotIndex, metaGroup);
       }
       const filename = `plot-k${s.k}-${d.plot_id_hex}.plot2`;
-      const group = { strength, groupId: d.plot_group_id_hex, index: plotIndex, size: group0 ? 0 : s.groupSize, metaGroup };
+      const group = { strength, groupId: d.plot_group_id_hex, index: plotIndex, size: group0 ? 0 : groupSize, metaGroup };
       let plotSink: Sink = sink;
-      if (sink.kind === "dir" && s.groupFolders) {
+      if (sink.kind === "dir" && s.groupFolders && s.groupKeys !== "none") {
         // Staggered groups share a group ID, so the meta group is part of the folder name.
         plotSink = { kind: "dir", dir: await sink.dir.getDirectoryHandle(`group-${d.plot_group_id_hex.slice(0, 16)}-m${metaGroup}`, { create: true }) };
       }

@@ -56,11 +56,6 @@ import "../styles/app.css";
             <small>2 to 17. Each step halves how often the plot passes the filter, and consensus doubles its chance to win when it passes, so expected rewards are the same at any strength. Higher means fewer disk reads but slower plotting and proving. The filter caps at 2^13 today (strength 6), higher values only start mattering as scheduled filter reductions arrive.</small>
           </label>
           <label>
-            Plots per group
-            <input name="groupSize" type="number" min="1" max="65535" value="1" />
-            <small>How many plots share one plot group. A group passes the filter as a unit, at the same signage points, so a drive holding one group only has to wake when that group passes. 1 means every plot passes on its own, like <code>chia plots create2</code>.</small>
-          </label>
-          <label>
             Size (k)
             <select name="k">
               <option value="28" selected>k28 (network size, about 1 GB file, needs about 11 GB of memory)</option>
@@ -76,7 +71,8 @@ import "../styles/app.css";
 
         <fieldset>
           <legend>Plot groups</legend>
-          <label class="inline"><input type="radio" name="groupKeys" value="separate" checked /> New groups, independent: each group gets its own plot key</label>
+          <label class="inline"><input type="radio" name="groupKeys" value="none" checked /> No groups: every plot has its own key and passes the filter on its own, like <code>chia plots create2</code></label>
+          <label class="inline"><input type="radio" name="groupKeys" value="separate" /> New groups, independent: each group gets its own plot key</label>
           <label class="inline"><input type="radio" name="groupKeys" value="shared" /> New groups, staggered: groups share one plot key, meta groups step by 16</label>
           <label class="inline"><input type="radio" name="groupKeys" value="continue" /> Add to an existing group</label>
           <div id="continue-panel" class="subpanel" hidden>
@@ -101,6 +97,12 @@ import "../styles/app.css";
               <small>Indexes already seen in the chosen folder are skipped. With a single plot the page cannot see the rest of the group, so set this past the highest index you have used. A reused index makes a duplicate plot.</small>
             </label>
           </div>
+          <div data-group-modes="separate shared" class="subpanel">
+          <label>
+            Plots per group
+            <input name="groupSize" type="number" min="1" max="65535" value="8" />
+            <small>Plots in a group pass the filter as a unit, at the same signage points, so a drive holding one group only has to wake when that group passes. A typical choice is the number of plots that fit on one drive.</small>
+          </label>
           <p class="hint">
             The filter is checked in windows of 16 signage points, and a group passes at most
             once per window. With independent keys, two drives sometimes wake in the same window
@@ -114,6 +116,7 @@ import "../styles/app.css";
             <input name="metaGroup" type="number" min="0" max="255" value="0" />
             <small>0 to 255, stored in each plot. It picks when a group passes, relative to other groups with the same plot key: values that differ by 16 or more never share a window, values that differ only in the last 4 bits (0 to 15) share windows but pass at different signage points. Between different keys it has no useful effect, so leave it at 0 for independent groups.</small>
           </label>
+          </div>
         </fieldset>
 
         <div class="row">
@@ -147,7 +150,7 @@ import "../styles/app.css";
             Use <b>New Folder</b> in the picker to make one. Then tell your harvester about it
             with <code>chia plots add -d &lt;folder&gt;</code>.
           </p>
-          <label class="inline">
+          <label class="inline" data-group-modes="separate shared continue">
             <input type="checkbox" name="groupFolders" />
             Put each plot group in its own subfolder, <code>group-&lt;group id&gt;-m&lt;meta group&gt;</code>
           </label>
