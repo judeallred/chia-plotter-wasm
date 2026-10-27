@@ -301,7 +301,7 @@ import "../styles/app.css";
 
         <fieldset>
           <legend>Output</legend>
-          <label class="inline"><input type="radio" name="output" value="dir" /> Save into a folder <small id="dir-name"></small></label>
+          <label class="inline"><input type="radio" name="output" value="dir" /> <span>Save into a folder <small id="dir-name"></small></span></label>
           <label class="inline"><input type="radio" name="output" value="download" /> Download each plot</label>
           <button type="button" id="pick-dir" class="secondary">Choose folder…</button>
           <p class="hint" id="dir-hint">
@@ -313,7 +313,7 @@ import "../styles/app.css";
           </p>
           <label class="inline" data-group-modes="drive separate shared continue">
             <input type="checkbox" name="groupFolders" />
-            Put plots in a subfolder per drive (<code>drive-&lt;key id&gt;</code>) or per group (<code>group-&lt;group id&gt;-m&lt;meta group&gt;</code>)
+            <span>Put plots in a subfolder per drive (<code>drive-&lt;key id&gt;</code>) or per group (<code>group-&lt;group id&gt;-m&lt;meta group&gt;</code>)</span>
           </label>
         </fieldset>
 
