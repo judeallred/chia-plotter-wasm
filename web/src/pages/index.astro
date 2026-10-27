@@ -14,6 +14,8 @@ import "../styles/app.css";
       <p class="sub">
         Proof of Space v2 plots (<code>.plot2</code>) made in your browser with WebAssembly.
         Format matches <code>chia plots create2</code> (chia_rs 0.49, pos2-chip 0.6.0). Alpha.
+        Chia does not accept v2 proofs yet: they activate with a future hard fork, so these plots
+        pass <code>chia plots check</code> but cannot win blocks until then.
       </p>
     </header>
 
@@ -54,6 +56,7 @@ import "../styles/app.css";
             Strength
             <input name="strength" type="number" min="2" max="17" value="2" />
             <small>2 to 17. Each step halves how often the plot passes the filter, and consensus doubles its chance to win when it passes, so expected rewards are the same at any strength. Higher means fewer disk reads but slower plotting and proving. The filter caps at 2^13 today (strength 6), higher values only start mattering as scheduled filter reductions arrive.</small>
+            <small id="read-rate" class="read-rate"></small>
           </label>
           <label>
             Size (k)
@@ -117,14 +120,26 @@ import "../styles/app.css";
               plot key:
             </p>
             <ul>
-              <li>Meta groups 16 or more apart (0, 16, 32, …) never pass in the same window.</li>
-              <li>Meta groups that differ only by 1 to 15 pass in the same windows, at different signage points.</li>
+              <li>Meta groups in different blocks of 16 (0 to 15, 16 to 31, 32 to 47, …) never pass in the same window. 15 and 16 are in different blocks.</li>
+              <li>Meta groups in the same block of 16 pass in the same windows, at different signage points.</li>
               <li>Groups with different plot keys pass at unrelated times, so their meta groups do not matter.</li>
             </ul>
             <p>
+              So the plot group comes first and the meta group only subdivides it: the meta group
+              has no meaning except relative to other plots with the same plot key and strength.
+            </p>
+            <p>
+              One limit: the filter only looks at as many bits as its current difficulty. The
+              blocks of 16 stay distinct while the filter uses 8 or more bits, which is true today
+              at every strength (9 to 13 bits). When Chia lowers the base filter later, low
+              strength plots drop below 8 bits and blocks start to coincide (at 6 bits, meta groups
+              0 and 64 pass together). Strength 6 keeps 8 or more bits through the first 5 planned
+              reductions.
+            </p>
+            <p>
               That is what the staggered option uses: up to 16 groups (16 drives) share one plot
-              key and get meta groups 0, 16, 32, …, so no two of those drives are ever needed in the
-              same window.
+              key and get meta groups 0, 16, 32, …, so no two of those drives are needed in the same
+              window, as long as the filter uses 8 or more bits.
             </p>
             <h3>Example setups</h3>
             <dl>
@@ -184,12 +199,13 @@ import "../styles/app.css";
           </label>
           <p class="hint">
             Staggered groups share one plot key and get meta groups 16 apart, so no two of them
-            (up to 16) are needed in the same window. Explain above has worked examples.
+            (up to 16) are needed in the same window while the filter uses 8 or more bits, which
+            is true today. Explain above has the details and worked examples.
           </p>
           <label>
             Meta group of the first group
             <input name="metaGroup" type="number" min="0" max="255" value="0" />
-            <small>0 to 255, stored in each plot. It picks when a group passes, relative to other groups with the same plot key: values that differ by 16 or more never share a window, values that differ only in the last 4 bits (0 to 15) share windows but pass at different signage points. Between different keys it has no useful effect, so leave it at 0 for independent groups.</small>
+            <small>0 to 255, stored in each plot. It only matters between groups with the same plot key: values in different blocks of 16 (0 to 15, 16 to 31, …) never share a window, values in the same block share windows but pass at different signage points. For independent groups leave it at 0.</small>
           </label>
           </div>
         </fieldset>

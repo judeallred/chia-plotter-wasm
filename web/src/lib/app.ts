@@ -217,6 +217,32 @@ export async function start() {
     $<HTMLElement>("#dir-hint").hidden = true;
   }
 
+  // Expected filter passes for the chosen strength, from today's consensus constants:
+  // 64 signage points per 600 s sub slot, filter bits min(9 + strength - 2, 13).
+  const readRate = $<HTMLElement>("#read-rate");
+  const syncReadRate = () => {
+    const s = readSettings(form);
+    if (!(s.strength >= 2 && s.strength <= 17)) {
+      readRate.textContent = "";
+      return;
+    }
+    const bits = Math.min(9 + s.strength - 2, 13);
+    const perDay = 9216 / 2 ** bits;
+    const every = (24 * 60) / perDay;
+    const everyText = every >= 60 ? `${(every / 60).toFixed(1)} hours` : `${Math.round(every)} minutes`;
+    const drivePlots = 4000;
+    const perSp = drivePlots / 2 ** bits;
+    const capped = s.strength > 6 ? " Above strength 6 the filter is capped today, so this is the same as strength 6." : "";
+    const drive =
+      perSp >= 1
+        ? `about ${perSp.toFixed(perSp < 10 ? 1 : 0)} of them to read at every signage point (every 9.4 s)`
+        : `one of them to read about every ${Math.round(9.375 / perSp)} s`;
+    readRate.textContent =
+      `Plot will wake about every ${everyText}, about ${perDay.toFixed(perDay < 10 ? 1 : 0)} times a day ` +
+      `(it passes 1 in ${(2 ** bits).toLocaleString()} signage points). A group wakes on the same schedule as one plot. ` +
+      `A 4 TB drive of ${drivePlots.toLocaleString()} ungrouped plots has ${drive}.${capped}`;
+  };
+
   const syncPoolMode = () => {
     const mode = readSettings(form).poolMode;
     form.querySelectorAll<HTMLElement>("[data-mode]").forEach((el) => {
@@ -224,6 +250,8 @@ export async function start() {
     });
   };
   syncPoolMode();
+  syncReadRate();
+  form.addEventListener("input", syncReadRate);
   form.addEventListener("change", () => {
     syncPoolMode();
     localStorage.setItem(STORAGE_KEY, JSON.stringify(readSettings(form)));
