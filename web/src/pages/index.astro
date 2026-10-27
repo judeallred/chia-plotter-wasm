@@ -53,7 +53,17 @@ import "../styles/app.css";
           <label>
             Strength
             <input name="strength" type="number" min="2" max="17" value="2" />
-            <small>2 to 17. Higher means fewer filter passes and less frequent lookups.</small>
+            <small>2 to 17. Each step halves how often the plot passes the filter.</small>
+          </label>
+          <label>
+            Plots per group
+            <input name="groupSize" type="number" min="1" max="65535" value="1" />
+            <small>Plots in a group share one plot key and pass the filter together, so a drive holding a group can sleep between passes. 1 gives every plot its own key, like <code>chia plots create2</code>.</small>
+          </label>
+          <label>
+            Meta group
+            <input name="metaGroup" type="number" min="0" max="255" value="0" />
+            <small>0 to 255. Shifts which signage point in each 16 point window the group passes on. Give drives different values to spread out their wakeups.</small>
           </label>
           <label>
             Size (k)
@@ -103,6 +113,15 @@ import "../styles/app.css";
         </fieldset>
 
         <label>
+          GPU acceleration
+          <select name="gpu">
+            <option value="on" selected>Use WebGPU when available</option>
+            <option value="off">CPU only</option>
+          </select>
+          <small>Runs the g(x) hash on the GPU. Each plot first checks the GPU against the CPU on a sample, and falls back to the CPU if they differ or anything fails. Plots are identical either way.</small>
+        </label>
+
+        <label>
           Check each new plot
           <input name="autoChecks" type="number" min="0" max="1000" value="10" />
           <small>Challenges to run against each finished plot, like <code>chia plots check -n</code>. 0 turns checking off. Checks run alongside the next plot.</small>
@@ -132,7 +151,7 @@ import "../styles/app.css";
         <h2>Finished plots</h2>
         <table id="history">
           <thead>
-            <tr><th>File</th><th>Size</th><th>Plot</th><th>Write</th><th>Total</th><th>Check</th><th></th></tr>
+            <tr><th>File</th><th>Size</th><th title="Strength, plot group ID, index in group, meta group. Plots with the same group ID pass the filter together.">Group</th><th>Plot</th><th>Write</th><th>Total</th><th>g(x)</th><th>Check</th><th></th></tr>
           </thead>
           <tbody></tbody>
         </table>

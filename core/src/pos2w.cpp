@@ -26,6 +26,7 @@
 #include "plot/Plotter.hpp"
 #include "plot/Progress.hpp"
 #include "pos/ProofParams.hpp"
+#include "gpu_bridge.hpp"
 
 #if defined(__EMSCRIPTEN__)
 #include <emscripten/emscripten.h>
@@ -352,3 +353,12 @@ POS2W_EXPORT void pos2w_set_threads(int32_t n)
 }
 
 POS2W_EXPORT int32_t pos2w_threads() { return static_cast<int32_t>(pos2w::TaskPool::instance().threads()); }
+
+#define EXPORT_FN POS2W_EXPORT
+#define gpu_request_ptr pos2w_gpu_request_ptr
+#define gpu_enable pos2w_gpu_enable
+#define gpu_enabled pos2w_gpu_enabled
+#define gpu_total_ms pos2w_gpu_total_ms
+#define gpu_reset_total pos2w_gpu_reset_total
+#define gpu_cpu_g pos2w_gpu_cpu_g
+#include "gpu_exports.inc"

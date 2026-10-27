@@ -9,10 +9,15 @@ export type Sink =
 export interface PlotJob {
   k: number;
   strength: number;
+  // Position in the plot group and the group's meta group, stored in the plot header.
+  plotIndex: number;
+  metaGroup: number;
   plotId: Uint8Array;
   memo: Uint8Array;
   testnet: boolean;
   threads: number;
+  // Use WebGPU for g(x) when available. The CPU is used if this is off or the GPU fails.
+  gpu: boolean;
   filename: string;
   sink: Sink;
 }
@@ -27,6 +32,10 @@ export interface Timings {
   writeMs: number;
   // Xs, table 1, table 2, table 3, as reported by the plotter.
   tablesMs: [number, number, number, number];
+  // Time spent in GPU requests, 0 if the GPU was not used.
+  gpuMs: number;
+  // What ran g(x): the GPU adapter, or why the CPU was used.
+  gpuNote: string;
 }
 
 export type Phase = "loading" | "plotting" | "writing";
@@ -57,6 +66,7 @@ export interface ValidateRequest {
   challenges: number;
   // "auto" tries mainnet first and switches to testnet if mainnet proofs do not validate.
   network: Network | "auto";
+  gpu: boolean;
 }
 
 export type FromValidator =
@@ -71,5 +81,6 @@ export type FromValidator =
       solved: number;
       valid: number;
       ms: number;
+      gpuNote: string;
       error?: string;
     };

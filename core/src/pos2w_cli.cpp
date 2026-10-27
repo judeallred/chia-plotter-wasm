@@ -2,7 +2,7 @@
 // uses, writes the result, and optionally writes a reference file via PlotFile::writeData
 // so the two can be compared byte for byte.
 //
-// Usage: pos2w_cli <out.plot2> <k> <strength> <plot_id_hex> <memo_hex> [testnet] [reference_out]
+// Usage: pos2w_cli <out.plot2> <k> <strength> <plot_id_hex> <memo_hex> [testnet] [index] [meta_group] [reference_out]
 
 #include <chrono>
 #include <cstdio>
@@ -28,7 +28,7 @@ int main(int argc, char** argv)
 {
     if (argc < 6) {
         std::cerr << "usage: " << argv[0]
-                  << " <out> <k> <strength> <plot_id_hex> <memo_hex> [testnet] [reference_out]\n";
+                  << " <out> <k> <strength> <plot_id_hex> <memo_hex> [testnet] [index] [meta_group] [reference_out]\n";
         return 1;
     }
     std::string out_path = argv[1];
@@ -37,9 +37,11 @@ int main(int argc, char** argv)
     auto plot_id = from_hex(argv[4]);
     auto memo = from_hex(argv[5]);
     int testnet = argc > 6 ? std::atoi(argv[6]) : 0;
+    int index = argc > 7 ? std::atoi(argv[7]) : 0;
+    int meta_group = argc > 8 ? std::atoi(argv[8]) : 0;
 
     auto t0 = std::chrono::steady_clock::now();
-    if (int rc = pos2w_start(plot_id.data(), k, strength, 0, 0, memo.data(), int(memo.size()), testnet)) {
+    if (int rc = pos2w_start(plot_id.data(), k, strength, index, meta_group, memo.data(), int(memo.size()), testnet)) {
         std::cerr << "start failed " << rc << "\n";
         return 1;
     }
@@ -70,12 +72,12 @@ int main(int argc, char** argv)
         ms(t0, t1), ms(t1, t2), pos2w_timing_ms(0), pos2w_timing_ms(1), pos2w_timing_ms(2),
         pos2w_timing_ms(3));
 
-    if (argc > 7) {
+    if (argc > 9) {
         // Reference path: the plotter's own writer.
         ProofParams params(plot_id.data(), uint8_t(k), uint8_t(strength), uint8_t(testnet));
         Plotter plotter(params);
         PlotData plot = plotter.run();
-        PlotFile::writeData(argv[7], plot, params, 0, 0, std::span<uint8_t const>(memo));
+        PlotFile::writeData(argv[9], plot, params, uint16_t(index), uint8_t(meta_group), std::span<uint8_t const>(memo));
     }
     return 0;
 }

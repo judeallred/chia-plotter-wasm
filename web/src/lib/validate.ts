@@ -19,6 +19,8 @@ export interface Report {
   network?: Network;
   farmerKey?: string;
   pool?: string;
+  // Plots with the same group ID pass the plot filter together.
+  groupId?: string;
   checks: Check[];
   ms: number;
 }
@@ -43,7 +45,7 @@ export class Validator {
 
   check(
     file: File,
-    opts: { challenges: number; network: Network | "auto"; expectFarmerKey?: string },
+    opts: { challenges: number; network: Network | "auto"; expectFarmerKey?: string; gpu: boolean },
     onProgress?: (p: Progress) => void,
   ): Promise<Report> {
     const id = this.nextId++;
@@ -52,6 +54,7 @@ export class Validator {
       let header: PlotHeader | undefined;
       let farmerKey: string | undefined;
       let pool: string | undefined;
+      let groupId: string | undefined;
       this.handlers.set(id, (m) => {
         if (m.type === "header") {
           header = m.header;
@@ -73,6 +76,7 @@ export class Validator {
               const info = inspect_memo(header.memo, header.strength, header.index, header.metaGroup, prefix);
               farmerKey = info.farmer_public_key;
               pool = info.pool_contract_address || info.pool_public_key;
+              groupId = info.plot_group_id_hex;
               const idOk = info.plot_id_hex === hex(header.plotId);
               checks.push({
                 name: "Keys",
@@ -99,7 +103,7 @@ export class Validator {
             checks.push({ name: header ? "Proofs" : "Header", ok: false, detail: m.error });
           } else {
             const ok = m.found > 0 && m.valid === m.found;
-            let detail = `${m.valid} of ${m.found} proofs valid over ${m.challenges} challenges (${m.network})`;
+            let detail = `${m.valid} of ${m.found} proofs valid over ${m.challenges} challenges (${m.network}, ${m.gpuNote || "CPU"})`;
             if (m.found === 0) detail = `no proofs found in ${m.challenges} challenges`;
             checks.push({ name: "Proofs", ok, detail });
           }
@@ -110,12 +114,13 @@ export class Validator {
             network: m.network,
             farmerKey,
             pool,
+            groupId,
             checks,
             ms: m.ms,
           });
         }
       });
-      this.worker.postMessage({ type: "validate", id, file, challenges: opts.challenges, network: opts.network });
+      this.worker.postMessage({ type: "validate", id, file, challenges: opts.challenges, network: opts.network, gpu: opts.gpu });
     });
   }
 }

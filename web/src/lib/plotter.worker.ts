@@ -5,6 +5,7 @@
 // smaller k sizes use the wasm32 build. Plotting itself runs on a pthread inside the
 // module, so this worker stays responsive and polls for progress.
 
+import { GpuG, selfTest, serve, type GpuHost } from "./gpu";
 import type { FromWorker, PlotJob, ToWorker } from "./protocol";
 
 declare const self: DedicatedWorkerGlobalScope;
@@ -34,6 +35,10 @@ interface Pos2Module {
   _pos2w_header(): number | bigint;
   _pos2w_header_len(): number;
   _pos2w_reset(): void;
+  _pos2w_gpu_enable(on: number): void;
+  _pos2w_gpu_enabled(): number;
+  _pos2w_gpu_total_ms(): number;
+  _pos2w_gpu_reset_total(): void;
 }
 
 const Status = { running: 1, plotted: 2, cancelled: -2, error: -1 } as const;
@@ -58,6 +63,8 @@ function loadModule(variant: "32" | "64"): Promise<Pos2Module> {
 }
 
 let cancelRequested = false;
+// One GPU device per worker, created on first use. undefined means not tried yet.
+let gpu: GpuG | null | undefined;
 let current: Pos2Module | null = null;
 
 const post = (msg: FromWorker) => self.postMessage(msg);
@@ -123,6 +130,30 @@ async function runPlot(job: PlotJob) {
   M._pos2w_reset();
   M._pos2w_set_threads(job.threads);
 
+  // Attach the GPU for g(x) if allowed, available, and it agrees with the CPU on a sample.
+  M._pos2w_gpu_enable(0);
+  M._pos2w_gpu_reset_total();
+  let gpuNote = job.gpu ? "" : "GPU off in settings";
+  let service: { stop(): void } | null = null;
+  if (job.gpu) {
+    try {
+      if (gpu === undefined || gpu?.lost) gpu = await GpuG.create();
+      if (!gpu) {
+        gpuNote = "no WebGPU adapter";
+      } else if (await selfTest(gpu, M as unknown as GpuHost, "pos2w", big, job.plotId, job.k, job.testnet)) {
+        service = serve(gpu, M as unknown as GpuHost, "pos2w", (m) => console.warn(m));
+        M._pos2w_gpu_enable(1);
+        gpuNote = gpu.adapterInfo || "GPU";
+      } else {
+        gpuNote = "GPU self test failed";
+        gpu = null;
+      }
+    } catch (e) {
+      gpuNote = `GPU unavailable: ${e instanceof Error ? e.message : e}`;
+      gpu = null;
+    }
+  }
+
   // The heap grows on the plot thread, which leaves Emscripten's HEAPU8 view on this
   // thread pointing at the old, shorter buffer. Always build a fresh view.
   const heap = () => new Uint8Array(M.wasmMemory.buffer);
@@ -134,11 +165,15 @@ async function runPlot(job: PlotJob) {
   const pId = alloc(job.plotId);
   const pMemo = alloc(job.memo);
   const rc = M._pos2w_start(
-    toPtr(pId), job.k, job.strength, 0, 0, toPtr(pMemo), job.memo.length, job.testnet ? 1 : 0,
+    toPtr(pId), job.k, job.strength, job.plotIndex, job.metaGroup, toPtr(pMemo), job.memo.length, job.testnet ? 1 : 0,
   );
   M._free(toPtr(pId));
   M._free(toPtr(pMemo));
-  if (rc !== 0) throw new Error(`plotter rejected parameters (code ${rc})`);
+  if (rc !== 0) {
+    M._pos2w_gpu_enable(0);
+    service?.stop();
+    throw new Error(`plotter rejected parameters (code ${rc})`);
+  }
 
   while (M._pos2w_status() === Status.running) {
     await sleep(200);
@@ -153,6 +188,10 @@ async function runPlot(job: PlotJob) {
       heapBytes: M.wasmMemory.buffer.byteLength,
     });
   }
+  const gpuMs = M._pos2w_gpu_total_ms();
+  if (service && !M._pos2w_gpu_enabled()) gpuNote = "GPU failed during the plot, finished on CPU";
+  M._pos2w_gpu_enable(0);
+  service?.stop();
   const status = M._pos2w_status();
   if (status === Status.cancelled) {
     M._pos2w_reset();
@@ -218,7 +257,7 @@ async function runPlot(job: PlotJob) {
     filename: job.filename,
     bytes,
     file,
-    timings: { totalMs: t2 - t0, plotMs: t1 - t0, writeMs: t2 - t1, tablesMs },
+    timings: { totalMs: t2 - t0, plotMs: t1 - t0, writeMs: t2 - t1, tablesMs, gpuMs, gpuNote },
   });
 }
 

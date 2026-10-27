@@ -27,6 +27,21 @@ export class DerivedPlot {
         return v1;
     }
     /**
+     * @returns {string}
+     */
+    get plot_group_id_hex() {
+        let deferred1_0;
+        let deferred1_1;
+        try {
+            const ret = wasm.derivedplot_plot_group_id_hex(this.__wbg_ptr);
+            deferred1_0 = ret[0];
+            deferred1_1 = ret[1];
+            return getStringFromWasm0(ret[0], ret[1]);
+        } finally {
+            wasm.__wbindgen_free(deferred1_0, deferred1_1, 1);
+        }
+    }
+    /**
      * @returns {Uint8Array}
      */
     get plot_id() {
@@ -93,6 +108,22 @@ export class MemoInfo {
         let deferred1_1;
         try {
             const ret = wasm.memoinfo_farmer_public_key(this.__wbg_ptr);
+            deferred1_0 = ret[0];
+            deferred1_1 = ret[1];
+            return getStringFromWasm0(ret[0], ret[1]);
+        } finally {
+            wasm.__wbindgen_free(deferred1_0, deferred1_1, 1);
+        }
+    }
+    /**
+     * Plots with the same group ID pass the plot filter together.
+     * @returns {string}
+     */
+    get plot_group_id_hex() {
+        let deferred1_0;
+        let deferred1_1;
+        try {
+            const ret = wasm.memoinfo_plot_group_id_hex(this.__wbg_ptr);
             deferred1_0 = ret[0];
             deferred1_1 = ret[1];
             return getStringFromWasm0(ret[0], ret[1]);

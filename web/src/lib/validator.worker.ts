@@ -3,6 +3,7 @@
 // same steps as `chia plots check`. Files are mounted with WORKERFS, which reads them
 // lazily, so large plots are never copied into memory.
 
+import { GpuG, selfTest, serve, type GpuHost } from "./gpu";
 import type { FromValidator, Network, PlotHeader, ValidateRequest } from "./protocol";
 
 declare const self: DedicatedWorkerGlobalScope;
@@ -20,7 +21,10 @@ interface Pos2v {
   UTF8ToString(p: number): string;
   stringToUTF8(s: string, p: number, max: number): void;
   lengthBytesUTF8(s: string): number;
-  _pos2v_challenge(path: number, plotId: number, k: number, strength: number, challenge: number, testnet: number): number;
+  _pos2v_start(path: number, plotId: number, k: number, strength: number, challenge: number, testnet: number): number;
+  _pos2v_status(): number;
+  _pos2v_gpu_enable(on: number): void;
+  _pos2v_gpu_enabled(): number;
   _pos2v_found(): number;
   _pos2v_solved(): number;
   _pos2v_valid(): number;
@@ -68,6 +72,7 @@ async function challenge(i: number): Promise<Uint8Array> {
 }
 
 let mountCount = 0;
+let gpu: GpuG | null | undefined;
 
 async function validate(req: ValidateRequest) {
   const t0 = performance.now();
@@ -86,10 +91,36 @@ async function validate(req: ValidateRequest) {
   heap().set(header.plotId, pId);
   const pCh = M._malloc(32) >>> 0;
 
+  // The solver hashes every x for each proof, the main thing worth putting on the GPU.
+  // The self test uses mainnet parameters, it only checks the hash implementation.
+  let gpuNote = req.gpu ? "" : "GPU off";
+  let service: { stop(): void } | null = null;
+  M._pos2v_gpu_enable(0);
+  if (req.gpu) {
+    try {
+      if (gpu === undefined || gpu?.lost) gpu = await GpuG.create();
+      if (!gpu) gpuNote = "no WebGPU adapter";
+      else if (await selfTest(gpu, M as unknown as GpuHost, "pos2v", false, header.plotId, header.k, false)) {
+        service = serve(gpu, M as unknown as GpuHost, "pos2v", (m) => console.warn(m));
+        M._pos2v_gpu_enable(1);
+        gpuNote = "GPU";
+      } else {
+        gpuNote = "GPU self test failed";
+        gpu = null;
+      }
+    } catch (e) {
+      gpuNote = `GPU unavailable: ${e instanceof Error ? e.message : e}`;
+      gpu = null;
+    }
+  }
+
   const run = async (i: number, net: Network) => {
     heap().set(await challenge(i), pCh);
-    const rc = M._pos2v_challenge(pPath, pId, header.k, header.strength, pCh, net === "testnet" ? 1 : 0);
-    if (rc !== 0) throw new Error(M.UTF8ToString(M._pos2v_error()));
+    if (M._pos2v_start(pPath, pId, header.k, header.strength, pCh, net === "testnet" ? 1 : 0) !== 0) {
+      throw new Error("validator busy");
+    }
+    while (M._pos2v_status() === 1) await new Promise((r) => setTimeout(r, 5));
+    if (M._pos2v_status() !== 2) throw new Error(M.UTF8ToString(M._pos2v_error()));
     return { found: M._pos2v_found(), solved: M._pos2v_solved(), valid: M._pos2v_valid() };
   };
 
@@ -116,12 +147,15 @@ async function validate(req: ValidateRequest) {
   } catch (e) {
     error = e instanceof Error ? e.message : String(e);
   } finally {
+    if (service && !M._pos2v_gpu_enabled()) gpuNote = "GPU failed, finished on CPU";
+    M._pos2v_gpu_enable(0);
+    service?.stop();
     [pPath, pId, pCh].forEach((p) => M._free(p));
     M.FS.unmount(mountpoint);
   }
   post({
     type: "result", id: req.id, network, challenges: req.challenges,
-    found, solved, valid, ms: performance.now() - t0, error,
+    found, solved, valid, ms: performance.now() - t0, gpuNote, error,
   });
 }
 
@@ -133,7 +167,7 @@ self.onmessage = (ev: MessageEvent<ValidateRequest>) => {
     validate(req).catch((e: unknown) => {
       post({
         type: "result", id: req.id, network: "mainnet", challenges: req.challenges,
-        found: 0, solved: 0, valid: 0, ms: 0, error: e instanceof Error ? e.message : String(e),
+        found: 0, solved: 0, valid: 0, ms: 0, gpuNote: "", error: e instanceof Error ? e.message : String(e),
       });
     }),
   );

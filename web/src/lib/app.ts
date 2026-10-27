@@ -20,6 +20,9 @@ interface Settings {
   network: "mainnet" | "testnet";
   output: "dir" | "download";
   autoChecks: number;
+  gpu: boolean;
+  groupSize: number;
+  metaGroup: number;
 }
 
 const $ = <T extends Element>(sel: string) => document.querySelector(sel) as T;
@@ -70,6 +73,9 @@ function readSettings(form: HTMLFormElement): Settings {
     network: s("network") === "testnet" ? "testnet" : "mainnet",
     output: s("output") === "dir" ? "dir" : "download",
     autoChecks: Number(s("autoChecks")),
+    gpu: s("gpu") !== "off",
+    groupSize: Number(s("groupSize")),
+    metaGroup: Number(s("metaGroup")),
   };
 }
 
@@ -96,6 +102,8 @@ function validate(s: Settings, caps: ReturnType<typeof capabilities>): Record<st
   }
   if (!(s.strength >= 2 && s.strength <= 17)) errors.form = "Strength must be between 2 and 17.";
   if (!(s.threads >= 1)) errors.form = "Threads must be at least 1.";
+  if (!(Number.isInteger(s.groupSize) && s.groupSize >= 1 && s.groupSize <= 65535)) errors.form = "Plots per group must be 1 to 65535.";
+  if (!(Number.isInteger(s.metaGroup) && s.metaGroup >= 0 && s.metaGroup <= 255)) errors.form = "Meta group must be 0 to 255.";
   if (!(s.count >= 0)) errors.form = "Number of plots cannot be negative.";
   if (!caps.isolated) errors.form = "This page is not cross-origin isolated, so the plotter cannot run.";
   if (s.k > 26 && !caps.memory64) errors.form = "k28 needs WebAssembly memory64, which this browser lacks.";
@@ -227,12 +235,19 @@ export async function start() {
       worker.postMessage({ type: "plot", job });
     });
 
-  const addHistory = (filename: string, bytes: number, t: Timings, file?: File) => {
+  interface GroupInfo { strength: number; groupId: string; index: number; size: number; metaGroup: number }
+  const addHistory = (filename: string, bytes: number, t: Timings, group: GroupInfo, file?: File) => {
     let link: HTMLAnchorElement | null = null;
     const tr = document.createElement("tr");
-    tr.innerHTML = `<td class="file"></td><td>${fmtBytes(bytes)}</td><td>${fmtMs(t.plotMs)}</td><td>${fmtMs(t.writeMs)}</td><td>${fmtMs(t.totalMs)}</td><td class="check">off</td><td></td>`;
+    tr.innerHTML = `<td class="file"></td><td>${fmtBytes(bytes)}</td><td class="group"></td><td>${fmtMs(t.plotMs)}</td><td>${fmtMs(t.writeMs)}</td><td>${fmtMs(t.totalMs)}</td><td class="gpu"></td><td class="check">off</td><td></td>`;
     tr.querySelector(".file")!.textContent = filename;
+    const groupCell = tr.querySelector<HTMLElement>(".group")!;
+    groupCell.textContent = `s${group.strength} ${group.groupId.slice(0, 8)} #${group.index + 1}/${group.size} m${group.metaGroup}`;
+    groupCell.title = `Strength ${group.strength}\nPlot group ID ${group.groupId}\nPlot ${group.index + 1} of ${group.size} in this group (plot index ${group.index})\nMeta group ${group.metaGroup}`;
     tr.title = `Xs ${fmtMs(t.tablesMs[0])}, T1 ${fmtMs(t.tablesMs[1])}, T2 ${fmtMs(t.tablesMs[2])}, T3 ${fmtMs(t.tablesMs[3])}`;
+    const gpuCell = tr.querySelector<HTMLElement>(".gpu")!;
+    gpuCell.textContent = t.gpuMs > 0 ? `GPU ${fmtMs(t.gpuMs)}` : "CPU";
+    gpuCell.title = t.gpuNote;
     if (file) {
       const a = document.createElement("a");
       a.href = URL.createObjectURL(file);
@@ -292,15 +307,21 @@ export async function start() {
     wakeLock = await (navigator as unknown as { wakeLock?: { request(t: string): Promise<{ release(): Promise<void> }> } })
       .wakeLock?.request("screen").catch(() => null) ?? null;
 
+    // Plots in a group share the plot master key (one seed) and take indexes 0..groupSize-1.
+    let seed = new Uint8Array(32);
     for (let i = 0; s.count === 0 || i < s.count; i++) {
       if (stopAfterCurrent) break;
-      const seed = crypto.getRandomValues(new Uint8Array(32));
-      const d = derive(seed, s.farmerKey, s.poolMode === "pk" ? s.poolKey : "", s.poolMode === "contract" ? s.poolAddress : "", s.strength, 0, 0);
+      const plotIndex = i % s.groupSize;
+      if (plotIndex === 0) {
+        seed.fill(0);
+        seed = crypto.getRandomValues(new Uint8Array(32));
+      }
+      const d = derive(seed, s.farmerKey, s.poolMode === "pk" ? s.poolKey : "", s.poolMode === "contract" ? s.poolAddress : "", s.strength, plotIndex, s.metaGroup);
       const filename = `plot-k${s.k}-${d.plot_id_hex}.plot2`;
-      seed.fill(0);
+      const group = { strength: s.strength, groupId: d.plot_group_id_hex, index: plotIndex, size: s.groupSize, metaGroup: s.metaGroup };
       const job: PlotJob = {
-        k: s.k, strength: s.strength, plotId: d.plot_id, memo: d.memo,
-        testnet: s.network === "testnet", threads: s.threads, filename, sink,
+        k: s.k, strength: s.strength, plotIndex, metaGroup: s.metaGroup, plotId: d.plot_id, memo: d.memo,
+        testnet: s.network === "testnet", threads: s.threads, gpu: s.gpu, filename, sink,
       };
       d.free();
       const res = await runOne(job);
@@ -309,7 +330,7 @@ export async function start() {
         break;
       }
       statsSource.finished.push({ bytes: res.bytes, ms: res.timings.totalMs });
-      const { link, checkCell } = addHistory(filename, res.bytes, res.timings, res.file);
+      const { link, checkCell } = addHistory(filename, res.bytes, res.timings, group, res.file);
       let checked: Promise<unknown> = Promise.resolve();
       if (s.autoChecks > 0) {
         // Read the plot back from where it was saved, so the check also covers the write.
@@ -317,7 +338,7 @@ export async function start() {
         if (file) {
           checkCell.textContent = "queued";
           checked = validator
-            .check(file, { challenges: s.autoChecks, network: s.network, expectFarmerKey: s.farmerKey }, (p) => {
+            .check(file, { challenges: s.autoChecks, network: s.network, expectFarmerKey: s.farmerKey, gpu: s.gpu }, (p) => {
               checkCell.textContent = `${p.done}/${p.total}…`;
             })
             .then((r) => renderCheckCell(checkCell, r));
@@ -337,6 +358,7 @@ export async function start() {
       barFill.style.width = "100%";
     }
 
+    seed.fill(0);
     // WASM memory never shrinks, so drop the worker (and its multi GB heap) when idle.
     worker.terminate();
     worker = makeWorker();
@@ -353,7 +375,7 @@ export async function start() {
     statusText.textContent = "Stopping…";
   });
 
-  setupValidateSection(validator, () => readSettings(form).farmerKey, caps.dirPicker);
+  setupValidateSection(validator, () => readSettings(form), caps.dirPicker);
 
   // Remove plots left in browser storage by an earlier visit.
   if (caps.opfs) {
@@ -375,7 +397,7 @@ function escapeHtml(t: string) {
   return t.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]!);
 }
 
-function setupValidateSection(validator: Validator, farmerKey: () => string, dirPicker: boolean) {
+function setupValidateSection(validator: Validator, settings: () => Settings, dirPicker: boolean) {
   const input = $<HTMLInputElement>("#v-files");
   const dirBtn = $<HTMLButtonElement>("#v-dir");
   const tbody = $<HTMLTableSectionElement>("#v-results tbody");
@@ -390,7 +412,7 @@ function setupValidateSection(validator: Validator, farmerKey: () => string, dir
       tr.cells[0].textContent = file.name;
       tbody.prepend(tr);
       validator
-        .check(file, { challenges, network, expectFarmerKey: farmerKey() || undefined }, (p) => {
+        .check(file, { challenges, network, expectFarmerKey: settings().farmerKey || undefined, gpu: settings().gpu }, (p) => {
           tr.cells[2].textContent = `${p.done}/${p.total} challenges, ${p.valid}/${p.found} proofs valid`;
         })
         .then((r) => {
@@ -402,7 +424,7 @@ function setupValidateSection(validator: Validator, farmerKey: () => string, dir
             .map((c) => `<li class="${c.ok ? "ok" : c.warn ? "warn" : "fail"}">${c.name}: ${escapeHtml(c.detail)}</li>`)
             .join("");
           const meta = [
-            r.header ? `strength ${r.header.strength}` : "",
+            r.header ? `strength ${r.header.strength}, group ${r.groupId?.slice(0, 8) ?? "?"}, plot index ${r.header.index}, meta group ${r.header.metaGroup}` : "",
             r.farmerKey ? `farmer ${r.farmerKey.slice(0, 12)}…` : "",
             r.pool ? `pool ${r.pool.length > 70 ? r.pool.slice(0, 12) + "…" : r.pool}` : "",
           ].filter(Boolean).join(", ");

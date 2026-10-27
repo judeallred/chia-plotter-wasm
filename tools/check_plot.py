@@ -86,7 +86,8 @@ def check(path: Path, challenges: int, testnet: bool, reference: Path | None) ->
         with tempfile.TemporaryDirectory() as tmp:
             ref = Path(tmp) / "ref.plot2"
             subprocess.run(
-                [str(reference), str(ref), str(k), str(strength), plot_id.hex(), memo.hex(), str(int(testnet))],
+                [str(reference), str(ref), str(k), str(strength), plot_id.hex(), memo.hex(), str(int(testnet)),
+                 str(prover.get_plot_index()), str(prover.get_meta_group())],
                 check=True, capture_output=True,
             )
             if filecmp.cmp(ref, path, shallow=False):

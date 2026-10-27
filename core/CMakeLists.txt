@@ -13,25 +13,53 @@ add_library(fse STATIC ${FSE_SRC})
 target_include_directories(fse PUBLIC ${POS2_DIR}/lib/fse/fse)
 target_compile_definitions(fse PUBLIC FSE_MAX_MEMORY_USAGE=16)
 
-# Patched copy of plot/Plotter.hpp. Upstream copies the final proof fragments into
-# PlotData instead of moving them, which costs an extra 2 GB of peak memory at k28. That
-# decides whether k28 fits in a browser tab, so we generate a copy with std::move.
+# Patched copies of a few upstream headers, generated into build/gen at configure time.
+# Each edit must match exactly once, so an upstream change fails the build loudly instead
+# of silently dropping a patch.
 set(GEN_DIR ${CMAKE_CURRENT_BINARY_DIR}/gen)
+# One edit per call. Arguments are passed separately because CMake lists would split C++
+# code on its semicolons.
+function(pos2w_edit var old new)
+  string(FIND "${${var}}" "${old}" pos)
+  if(pos EQUAL -1)
+    message(FATAL_ERROR "Upstream changed: cannot find \"${old}\". Update core/CMakeLists.txt.")
+  endif()
+  string(REPLACE "${old}" "${new}" result "${${var}}")
+  set(${var} "${result}" PARENT_SCOPE)
+endfunction()
+
+# Plotter.hpp: upstream copies the final proof fragments into PlotData instead of moving
+# them, which costs 2 GB of peak memory at k28 and decides whether k28 fits in a tab. Also
+# swap in the Xs constructor that can run g(x) on the GPU.
 file(READ ${POS2_DIR}/src/plot/Plotter.hpp plotter_src)
-set(plotter_copy "plot_data.t3_proof_fragments = t3_proof_fragments;")
-string(FIND "${plotter_src}" "${plotter_copy}" plotter_copy_pos)
-if(plotter_copy_pos EQUAL -1)
-  message(FATAL_ERROR "Plotter.hpp changed upstream. Update the std::move patch in core/CMakeLists.txt.")
-endif()
-string(REPLACE "${plotter_copy}" "plot_data.t3_proof_fragments = std::move(t3_proof_fragments);" plotter_src "${plotter_src}")
+pos2w_edit(plotter_src
+  "plot_data.t3_proof_fragments = t3_proof_fragments;"
+  "plot_data.t3_proof_fragments = std::move(t3_proof_fragments);")
+pos2w_edit(plotter_src "#include \"common/Timer.hpp\"" "#include \"common/Timer.hpp\"\n#include \"xs_gpu.hpp\"")
+pos2w_edit(plotter_src
+  "XsConstructor xs_gen_ctor(proof_params_, sink);"
+  "pos2w::GpuXsConstructor xs_gen_ctor(proof_params_, sink);")
 file(WRITE ${GEN_DIR}/plot/Plotter.hpp "${plotter_src}")
-set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${POS2_DIR}/src/plot/Plotter.hpp)
+
+# Solver.hpp: route the all-x g(x) bitmask pass through the GPU when one is attached.
+file(READ ${POS2_DIR}/src/solve/Solver.hpp solver_src)
+file(READ ${CMAKE_CURRENT_SOURCE_DIR}/src/solver_gpu_inject.inc solver_inject)
+pos2w_edit(solver_src "#include \"common/Timer.hpp\"" "#include \"common/Timer.hpp\"\n#include \"gpu_bridge.hpp\"")
+pos2w_edit(solver_src
+  "    void filterX2Candidates(std::span<uint32_t const> const x1_bitmask,"
+  "${solver_inject}    void filterX2Candidates_cpu(std::span<uint32_t const> const x1_bitmask,")
+file(WRITE ${GEN_DIR}/solve/Solver.hpp "${solver_src}")
+
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+  ${POS2_DIR}/src/plot/Plotter.hpp ${POS2_DIR}/src/solve/Solver.hpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/solver_gpu_inject.inc)
 
 add_library(pos2w_core INTERFACE)
-# Search order matters. gen/ and overrides/ shadow upstream files. src/plot is last so the
-# generated Plotter.hpp can still find its neighbours, which it includes without a prefix.
+# Search order matters. gen/ and overrides/ shadow upstream files. src/plot and src/solve
+# come last so the generated headers can still find neighbours they include without a prefix.
 target_include_directories(pos2w_core INTERFACE
-  ${GEN_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/overrides ${POS2_DIR}/src ${POS2_DIR}/src/plot)
+  ${GEN_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/overrides ${CMAKE_CURRENT_SOURCE_DIR}/src
+  ${POS2_DIR}/src ${POS2_DIR}/src/plot ${POS2_DIR}/src/solve)
 target_link_libraries(pos2w_core INTERFACE fse)
 
 if(EMSCRIPTEN)

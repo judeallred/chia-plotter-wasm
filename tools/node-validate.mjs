@@ -38,7 +38,9 @@ for (const file of files) {
     const idx = Buffer.alloc(32);
     idx.writeBigUInt64BE(BigInt(i), 24);
     heap().set(createHash("sha256").update(idx).digest(), pCh);
-    if (M._pos2v_challenge(pPath, pId, k, strength, pCh, testnet) !== 0) {
+    if (M._pos2v_start(pPath, pId, k, strength, pCh, testnet) !== 0) throw new Error("start failed");
+    while (M._pos2v_status() === 1) await new Promise((r) => setTimeout(r, 2));
+    if (M._pos2v_status() !== 2) {
       console.log(`  error: ${M.UTF8ToString(M._pos2v_error())}`);
       failed = true;
       break;

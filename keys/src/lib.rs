@@ -15,6 +15,7 @@ pub enum Pool {
 
 pub struct PlotInfo {
     pub plot_id: [u8; 32],
+    pub plot_group_id: [u8; 32],
     pub memo: Vec<u8>,
     pub plot_public_key: G1Element,
 }
@@ -46,12 +47,18 @@ pub fn generate_plot_public_key(local_pk: &G1Element, farmer_pk: &G1Element, inc
     }
 }
 
-pub fn compute_plot_id_v2(strength: u8, plot_pk: &G1Element, pool: &Pool, plot_index: u16, meta_group: u8) -> [u8; 32] {
+/// The plot group ID. The v2 plot filter hashes this, not the plot ID, so every plot with
+/// the same strength, plot key and pool passes the filter at the same time.
+pub fn compute_plot_group_id_v2(strength: u8, plot_pk: &G1Element, pool: &Pool) -> [u8; 32] {
     let pool_bytes: Vec<u8> = match pool {
         Pool::PublicKey(pk) => pk.to_bytes().to_vec(),
         Pool::ContractPuzzleHash(ph) => ph.to_vec(),
     };
-    let group_id = sha256(&[&[strength], &plot_pk.to_bytes(), &pool_bytes]);
+    sha256(&[&[strength], &plot_pk.to_bytes(), &pool_bytes])
+}
+
+pub fn compute_plot_id_v2(strength: u8, plot_pk: &G1Element, pool: &Pool, plot_index: u16, meta_group: u8) -> [u8; 32] {
+    let group_id = compute_plot_group_id_v2(strength, plot_pk, pool);
     // chia_rs streams integers big endian.
     sha256(&[&group_id, &plot_index.to_be_bytes(), &[meta_group]])
 }
@@ -63,12 +70,13 @@ pub fn derive_plot(master_seed: &[u8; 32], farmer_pk: &G1Element, pool: &Pool, s
     let local_pk = master_sk_to_local_sk(&sk).public_key();
     let plot_public_key = generate_plot_public_key(&local_pk, farmer_pk, include_taproot);
     let plot_id = compute_plot_id_v2(strength, &plot_public_key, pool, plot_index, meta_group);
+    let plot_group_id = compute_plot_group_id_v2(strength, &plot_public_key, pool);
     let pool_bytes: Vec<u8> = match pool {
         Pool::PublicKey(pk) => pk.to_bytes().to_vec(),
         Pool::ContractPuzzleHash(ph) => ph.to_vec(),
     };
     let memo = [pool_bytes.as_slice(), &farmer_pk.to_bytes(), &sk.to_bytes()].concat();
-    PlotInfo { plot_id, memo, plot_public_key }
+    PlotInfo { plot_id, plot_group_id, memo, plot_public_key }
 }
 
 fn parse_g1(hex_str: &str) -> Result<G1Element, String> {
@@ -89,6 +97,7 @@ pub fn decode_address(address: &str) -> Result<[u8; 32], String> {
 #[wasm_bindgen]
 pub struct DerivedPlot {
     plot_id: Vec<u8>,
+    plot_group_id_hex: String,
     memo: Vec<u8>,
     plot_public_key: String,
 }
@@ -102,6 +111,10 @@ impl DerivedPlot {
     #[wasm_bindgen(getter)]
     pub fn plot_id_hex(&self) -> String {
         hex::encode(&self.plot_id)
+    }
+    #[wasm_bindgen(getter)]
+    pub fn plot_group_id_hex(&self) -> String {
+        self.plot_group_id_hex.clone()
     }
     #[wasm_bindgen(getter)]
     pub fn memo(&self) -> Vec<u8> {
@@ -135,6 +148,7 @@ pub fn derive(
     let info = derive_plot(&seed, &farmer, &pool, strength, plot_index, meta_group);
     Ok(DerivedPlot {
         plot_id: info.plot_id.to_vec(),
+        plot_group_id_hex: hex::encode(info.plot_group_id),
         memo: info.memo,
         plot_public_key: hex::encode(info.plot_public_key.to_bytes()),
     })
@@ -158,6 +172,7 @@ pub struct MemoInfo {
     pool_public_key: String,
     pool_contract_address: String,
     plot_id_hex: String,
+    plot_group_id_hex: String,
 }
 
 #[wasm_bindgen]
@@ -180,6 +195,11 @@ impl MemoInfo {
     #[wasm_bindgen(getter)]
     pub fn plot_id_hex(&self) -> String {
         self.plot_id_hex.clone()
+    }
+    /// Plots with the same group ID pass the plot filter together.
+    #[wasm_bindgen(getter)]
+    pub fn plot_group_id_hex(&self) -> String {
+        self.plot_group_id_hex.clone()
     }
 }
 
@@ -206,6 +226,7 @@ pub fn inspect_memo(memo: &[u8], strength: u8, plot_index: u16, meta_group: u8, 
     let local_pk = master_sk_to_local_sk(&sk).public_key();
     let plot_pk = generate_plot_public_key(&local_pk, &farmer, include_taproot);
     let plot_id = compute_plot_id_v2(strength, &plot_pk, &pool, plot_index, meta_group);
+    let plot_group_id = compute_plot_group_id_v2(strength, &plot_pk, &pool);
 
     let (pool_public_key, pool_contract_address) = match &pool {
         Pool::PublicKey(pk) => (hex::encode(pk.to_bytes()), String::new()),
@@ -220,5 +241,6 @@ pub fn inspect_memo(memo: &[u8], strength: u8, plot_index: u16, meta_group: u8, 
         pool_public_key,
         pool_contract_address,
         plot_id_hex: hex::encode(plot_id),
+        plot_group_id_hex: hex::encode(plot_group_id),
     })
 }

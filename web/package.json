@@ -14,6 +14,7 @@
   },
   "devDependencies": {
     "@astrojs/check": "^0.9.12",
+    "@webgpu/types": "^0.1.74",
     "typescript": "^6.0.3"
   }
 }

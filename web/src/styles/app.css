@@ -255,3 +255,9 @@ td ul.checks {
 #v-results {
   margin-top: 12px;
 }
+
+td.group {
+  font-family: ui-monospace, Menlo, monospace;
+  font-size: 0.75rem;
+  white-space: nowrap;
+}

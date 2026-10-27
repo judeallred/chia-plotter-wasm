@@ -6,6 +6,7 @@ export class DerivedPlot {
     free(): void;
     [Symbol.dispose](): void;
     readonly memo: Uint8Array;
+    readonly plot_group_id_hex: string;
     readonly plot_id: Uint8Array;
     readonly plot_id_hex: string;
     readonly plot_public_key: string;
@@ -16,6 +17,10 @@ export class MemoInfo {
     free(): void;
     [Symbol.dispose](): void;
     readonly farmer_public_key: string;
+    /**
+     * Plots with the same group ID pass the plot filter together.
+     */
+    readonly plot_group_id_hex: string;
     /**
      * The plot ID implied by the memo keys. It must equal the ID in the plot header.
      */
@@ -63,11 +68,13 @@ export interface InitOutput {
     readonly check_public_key: (a: number, b: number) => [number, number];
     readonly derive: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number) => [number, number, number];
     readonly derivedplot_memo: (a: number) => [number, number];
+    readonly derivedplot_plot_group_id_hex: (a: number) => [number, number];
     readonly derivedplot_plot_id: (a: number) => [number, number];
     readonly derivedplot_plot_id_hex: (a: number) => [number, number];
     readonly derivedplot_plot_public_key: (a: number) => [number, number];
     readonly inspect_memo: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number, number];
     readonly memoinfo_farmer_public_key: (a: number) => [number, number];
+    readonly memoinfo_plot_group_id_hex: (a: number) => [number, number];
     readonly memoinfo_plot_id_hex: (a: number) => [number, number];
     readonly memoinfo_pool_contract_address: (a: number) => [number, number];
     readonly memoinfo_pool_public_key: (a: number) => [number, number];
