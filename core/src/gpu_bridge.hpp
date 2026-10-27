@@ -80,13 +80,21 @@ struct Request {
     uint32_t feistel_keys[12];
 };
 
-static_assert(offsetof(Request, key1) == 16 && offsetof(Request, bitmask_shift) == 48
-    && offsetof(Request, out_ptr) == 56 && offsetof(Request, result_count) == 80
-    && offsetof(Request, gpu_ms) == 88 && offsetof(Request, table_id) == 96
-    && offsetof(Request, in_ptr) == 112 && offsetof(Request, count) == 120
-    && offsetof(Request, r_ptr) == 128 && offsetof(Request, l_stride) == 152
-    && offsetof(Request, feistel_keys) == 160 && sizeof(Request) == 208,
-    "Request layout is mirrored in web/src/lib/gpu.ts");
+// Every offset, as listed in `R` in web/src/lib/gpu/serve.ts.
+static_assert(offsetof(Request, state) == 0 && offsetof(Request, op) == 4
+        && offsetof(Request, k) == 8 && offsetof(Request, xor_const) == 12
+        && offsetof(Request, key1) == 16 && offsetof(Request, key2) == 32
+        && offsetof(Request, bitmask_shift) == 48 && offsetof(Request, bitmask_words) == 52
+        && offsetof(Request, out_ptr) == 56 && offsetof(Request, out_capacity) == 64
+        && offsetof(Request, bitmask_ptr) == 72 && offsetof(Request, result_count) == 80
+        && offsetof(Request, gpu_ms) == 88 && offsetof(Request, table_id) == 96
+        && offsetof(Request, strength) == 100 && offsetof(Request, num_match_keys) == 104
+        && offsetof(Request, mask) == 108 && offsetof(Request, in_ptr) == 112
+        && offsetof(Request, count) == 120 && offsetof(Request, r_ptr) == 128
+        && offsetof(Request, r_count) == 136 && offsetof(Request, aux_ptr) == 144
+        && offsetof(Request, l_stride) == 152 && offsetof(Request, direct) == 156
+        && offsetof(Request, feistel_keys) == 160 && sizeof(Request) == 208,
+    "Request layout is mirrored in web/src/lib/gpu/serve.ts");
 
 inline Request g_request {};
 inline std::atomic<bool> g_enabled { false };
@@ -95,9 +103,10 @@ inline std::atomic<double> g_total_ms { 0 };
 
 // How table pairs are found when a GPU is attached.
 enum PairsMode : int32_t { kPairsCpu = 0, kPairsGpu = 1, kPairsHybrid = 2 };
-inline std::atomic<int32_t> g_pairs_mode { kPairsHybrid };
-// Hybrid mode: the share of each section's left candidates given to the GPU, per table.
-// Adjusted after every section so the CPU and GPU finish together, and kept across plots.
+inline std::atomic<int32_t> g_pairs_mode { kPairsGpu };
+// Hybrid mode: the share of each section's left candidates given to the GPU, indexed by
+// table ID (1 to 3, entry 0 is unused). Adjusted after every section so the CPU and GPU
+// finish together, and kept across plots.
 inline std::atomic<double> g_split[4] = { 0.7, 0.7, 0.7, 0.7 };
 
 inline void fill_params(Request& r, ProofParams const& params)
@@ -139,9 +148,10 @@ public:
         Request& shared = g_request;
         // Copy everything but state, then publish with a release store on state.
         std::memcpy(reinterpret_cast<char*>(&shared) + sizeof(int32_t),
-            reinterpret_cast<char const*>(&r) + sizeof(int32_t), sizeof(Request) - sizeof(int32_t));
-        auto* state = reinterpret_cast<std::atomic<int32_t>*>(&shared.state);
-        state->store(kRequested, std::memory_order_release);
+            reinterpret_cast<char const*>(&r) + sizeof(int32_t),
+            sizeof(Request) - sizeof(int32_t));
+        std::atomic_ref<int32_t> state(shared.state);
+        state.store(kRequested, std::memory_order_release);
         emscripten_futex_wake(&shared.state, 1 << 30);
         active_ = true;
         return true;
@@ -160,23 +170,24 @@ public:
             return false;
         }
         Request& shared = g_request;
-        auto* state = reinterpret_cast<std::atomic<int32_t>*>(&shared.state);
-        while (state->load(std::memory_order_acquire) == kRequested) {
+        std::atomic_ref<int32_t> state(shared.state);
+        while (state.load(std::memory_order_acquire) == kRequested) {
             emscripten_futex_wait(&shared.state, kRequested, 1000.0);
         }
-        bool const ok = state->load() == kDone;
+        bool const ok = state.load() == kDone;
         r.result_count = shared.result_count;
         r.gpu_ms = shared.gpu_ms;
-        state->store(kIdle);
-        active_ = false;
-        lock_.unlock();
+        state.store(kIdle);
         if (ok) {
+            // Under the request lock, so concurrent callers cannot lose each other's time.
             g_total_ms.store(g_total_ms.load() + r.gpu_ms);
         }
         else {
             // Do not keep asking a GPU that just failed.
             g_enabled = false;
         }
+        active_ = false;
+        lock_.unlock();
         return ok;
 #else
         (void)r;

@@ -3,8 +3,9 @@
 // same steps as `chia plots check`. Files are mounted with WORKERFS, which reads them
 // lazily, so large plots are never copied into memory.
 
-import { GpuG, selfTest, serve, type GpuHost } from "./gpu";
-import type { FromValidator, Network, PlotHeader, ValidateRequest } from "./protocol";
+import { type GpuHost, type GpuWorkerState, attachGpu, ptr } from "./gpu";
+import { readPlotHeader } from "./plot-header";
+import type { FromValidator, Network, ValidateRequest } from "./protocol";
 
 declare const self: DedicatedWorkerGlobalScope;
 
@@ -24,7 +25,6 @@ interface Pos2v {
   _pos2v_start(path: number, plotId: number, k: number, strength: number, challenge: number, testnet: number): number;
   _pos2v_status(): number;
   _pos2v_gpu_enable(on: number): void;
-  _pos2v_gpu_enabled(): number;
   _pos2v_found(): number;
   _pos2v_solved(): number;
   _pos2v_valid(): number;
@@ -44,26 +44,6 @@ function load(): Promise<Pos2v> {
 
 const post = (m: FromValidator) => self.postMessage(m);
 
-async function readHeader(file: File): Promise<PlotHeader> {
-  const b = new Uint8Array(await file.slice(0, 43 + 255).arrayBuffer());
-  if (b.length < 43 || String.fromCharCode(...b.subarray(0, 4)) !== "pos2") {
-    throw new Error("not a v2 plot file (missing pos2 header)");
-  }
-  if (b[4] !== 1) throw new Error(`unsupported plot format version ${b[4]}, expected 1`);
-  const k = b[37];
-  if (k < 18 || k > 32 || k % 2) throw new Error(`invalid k ${k}`);
-  const memoLen = b[42];
-  if (b.length < 43 + memoLen) throw new Error("file is truncated inside the header");
-  return {
-    plotId: b.slice(5, 37),
-    k,
-    strength: b[38],
-    index: b[39] | (b[40] << 8),
-    metaGroup: b[41],
-    memo: b.slice(43, 43 + memoLen),
-  };
-}
-
 // The challenges chia plots check uses: sha256 of the index as 32 big endian bytes.
 async function challenge(i: number): Promise<Uint8Array> {
   const buf = new Uint8Array(32);
@@ -72,11 +52,12 @@ async function challenge(i: number): Promise<Uint8Array> {
 }
 
 let mountCount = 0;
-let gpu: GpuG | null | undefined;
+const gpuState: GpuWorkerState = {};
+const errorText = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
 async function validate(req: ValidateRequest) {
   const t0 = performance.now();
-  const header = await readHeader(req.file);
+  const header = await readPlotHeader(req.file);
   post({ type: "header", id: req.id, header });
   const M = await load();
   const heap = () => new Uint8Array(M.wasmMemory.buffer);
@@ -85,34 +66,21 @@ async function validate(req: ValidateRequest) {
   M.FS.mount(M.WORKERFS, { files: [req.file] }, mountpoint);
   const pathStr = `${mountpoint}/${req.file.name}`;
   const pathLen = M.lengthBytesUTF8(pathStr) + 1;
-  const pPath = M._malloc(pathLen) >>> 0;
+  const pPath = ptr(M._malloc(pathLen));
   M.stringToUTF8(pathStr, pPath, pathLen);
-  const pId = M._malloc(32) >>> 0;
+  const pId = ptr(M._malloc(32));
   heap().set(header.plotId, pId);
-  const pCh = M._malloc(32) >>> 0;
+  const pCh = ptr(M._malloc(32));
 
   // The solver hashes every x for each proof, the main thing worth putting on the GPU.
   // The self test uses mainnet parameters, it only checks the hash implementation.
-  let gpuNote = req.gpu ? "" : "GPU off";
-  let service: { stop(): void } | null = null;
   M._pos2v_gpu_enable(0);
-  if (req.gpu) {
-    try {
-      if (gpu === undefined || gpu?.lost) gpu = await GpuG.create();
-      if (!gpu) gpuNote = "no WebGPU adapter";
-      else if (await selfTest(gpu, M as unknown as GpuHost, "pos2v", false, header.plotId, header.k, false)) {
-        service = serve(gpu, M as unknown as GpuHost, "pos2v", (m) => console.warn(m));
-        M._pos2v_gpu_enable(1);
-        gpuNote = "GPU";
-      } else {
-        gpuNote = "GPU self test failed";
-        gpu = null;
-      }
-    } catch (e) {
-      gpuNote = `GPU unavailable: ${e instanceof Error ? e.message : e}`;
-      gpu = null;
-    }
-  }
+  const gpu = req.gpu
+    ? await attachGpu(gpuState, M as unknown as GpuHost, "pos2v", {
+        plotId: header.plotId, k: header.k, testnet: false, strength: 2, pairs: false, memory64: false,
+      })
+    : { note: "GPU off", stillEnabled: () => false, stop: () => {} };
+  let gpuNote = gpu.note;
 
   const run = async (i: number, net: Network) => {
     heap().set(await challenge(i), pCh);
@@ -145,11 +113,10 @@ async function validate(req: ValidateRequest) {
       post({ type: "progress", id: req.id, done: i + 1, total: req.challenges, found, valid });
     }
   } catch (e) {
-    error = e instanceof Error ? e.message : String(e);
+    error = errorText(e);
   } finally {
-    if (service && !M._pos2v_gpu_enabled()) gpuNote = "GPU failed, finished on CPU";
-    M._pos2v_gpu_enable(0);
-    service?.stop();
+    if (gpu.stats && !gpu.stillEnabled()) gpuNote = "GPU failed, finished on CPU";
+    gpu.stop();
     [pPath, pId, pCh].forEach((p) => M._free(p));
     M.FS.unmount(mountpoint);
   }
@@ -167,7 +134,7 @@ self.onmessage = (ev: MessageEvent<ValidateRequest>) => {
     validate(req).catch((e: unknown) => {
       post({
         type: "result", id: req.id, network: "mainnet", challenges: req.challenges,
-        found: 0, solved: 0, valid: 0, ms: 0, gpuNote: "", error: e instanceof Error ? e.message : String(e),
+        found: 0, solved: 0, valid: 0, ms: 0, gpuNote: "", error: errorText(e),
       });
     }),
   );

@@ -16,22 +16,25 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <exception>
 #include <memory>
 #include <string>
 #include <thread>
 #include <vector>
 
+#include "common/thread.hpp"
+#include "gpu_bridge.hpp"
+#include "phase_timings.hpp"
 #include "plot/ChunkCompressor.hpp"
 #include "plot/PlotData.hpp"
 #include "plot/PlotFile.hpp"
 #include "plot/Plotter.hpp"
 #include "plot/Progress.hpp"
 #include "pos/ProofParams.hpp"
-#include "gpu_bridge.hpp"
 
 #if defined(__EMSCRIPTEN__)
-#include <emscripten/emscripten.h>
 #include <emscripten/console.h>
+#include <emscripten/emscripten.h>
 #define POS2W_EXPORT extern "C" EMSCRIPTEN_KEEPALIVE
 #else
 #define POS2W_EXPORT extern "C"
@@ -56,8 +59,11 @@ public:
     {
         inner_.on_event(e);
 #if POS2W_DEBUG
-        emscripten_console_logf("event kind=%d table=%d mk=%u/%u", int(e.kind), int(e.table_id),
-            e.processed_match_keys, e.match_keys_total);
+        emscripten_console_logf("event kind=%d table=%d mk=%u/%u",
+            int(e.kind),
+            int(e.table_id),
+            e.processed_match_keys,
+            e.match_keys_total);
 #endif
         if (e.kind == EventKind::TableEnd && e.table_id < 4) {
             table_ns_[e.table_id].store(e.elapsed, std::memory_order_relaxed);
@@ -73,7 +79,8 @@ public:
         while (pause_.load(std::memory_order_relaxed) && !cancel_.load(std::memory_order_relaxed)) {
             std::this_thread::sleep_for(std::chrono::milliseconds(50));
         }
-        return !cancel_.load(std::memory_order_relaxed);
+        // A failed task stops the plot here. The job reports the task's error.
+        return !cancel_.load(std::memory_order_relaxed) && !pos2w::TaskPool::instance().failed();
     }
 
     AtomicProgressSnapshot snapshot() const noexcept { return inner_.snapshot(); }
@@ -178,26 +185,41 @@ POS2W_EXPORT int32_t pos2w_start(uint8_t const* plot_id,
     if (plot_id == nullptr || memo == nullptr || memo_len <= 0 || memo_len > 255) {
         return -4;
     }
+    // ProofParams rejects some combinations itself (strength must be below k - 3). Check
+    // before touching the current job, and never let the exception cross the C boundary.
+    std::unique_ptr<ProofParams> params;
+    try {
+        params = std::make_unique<ProofParams>(plot_id, k, strength, static_cast<uint8_t>(testnet));
+    }
+    catch (std::exception const&) {
+        return -2;
+    }
     join_worker();
     delete g_job;
     // Start the task pool here, on the calling thread. In Emscripten, creating pthreads from
     // another pthread stalls, so the plot thread must never be the one to start the pool.
-    pos2w::TaskPool::instance().threads();
+    pos2w::TaskPool& pool = pos2w::TaskPool::instance();
+    pool.threads();
+    pool.take_error();
     pos2w::reset_phases();
     g_job = new Job();
     Job& j = *g_job;
-    j.params = std::make_unique<ProofParams>(plot_id, k, strength, static_cast<uint8_t>(testnet));
+    j.params = std::move(params);
     j.index = static_cast<uint16_t>(index);
     j.meta_group = static_cast<uint8_t>(meta_group);
     j.memo.assign(memo, memo + memo_len);
     j.status = kRunning;
 
-    j.worker = std::thread([&j]() {
+    j.worker = std::thread([&j, &pool]() {
         try {
             Plotter plotter(*j.params);
             Plotter::Options opt;
             opt.sink = &j.sink;
             j.plot = plotter.run(opt);
+            if (std::exception_ptr task_error = pool.take_error()) {
+                j.plot = PlotData {};
+                std::rethrow_exception(task_error);
+            }
             if (j.sink.cancel_) {
                 j.plot = PlotData {};
                 j.status = kCancelled;
@@ -304,8 +326,8 @@ POS2W_EXPORT uint8_t const* pos2w_next_chunk()
         int const stub_bits = j.params->get_k() - PlotFile::MINUS_STUB_BITS;
         uint64_t const range_per_chunk
             = (1ULL << (j.params->get_k() + PlotFile::CHUNK_SPAN_RANGE_BITS));
-        std::vector<uint8_t> compressed = ChunkCompressor::compressProofFragments(
-            chunks[i], i * range_per_chunk, stub_bits);
+        std::vector<uint8_t> compressed
+            = ChunkCompressor::compressProofFragments(chunks[i], i * range_per_chunk, stub_bits);
         // Release this chunk's fragments now that they are compressed.
         std::vector<ProofFragment>().swap(chunks[i]);
 
@@ -331,18 +353,18 @@ POS2W_EXPORT uint8_t const* pos2w_next_chunk()
 
 POS2W_EXPORT double pos2w_chunk_len() { return g_job ? double(g_job->chunk_buf.size()) : 0; }
 
-// Returns the final header. Call after the last chunk. Length is pos2w_header_len().
+// Returns the final header, or null unless every chunk has been written. Length is
+// pos2w_header_len().
 POS2W_EXPORT uint8_t const* pos2w_header()
 {
-    if (!g_job)
+    if (!g_job || g_job->status != kWriting
+        || g_job->next_chunk != g_job->chunked.proof_fragments_chunks.size())
         return nullptr;
     g_job->status = kDone;
     return g_job->header.data();
 }
 
 POS2W_EXPORT double pos2w_header_len() { return g_job ? double(g_job->header.size()) : 0; }
-
-POS2W_EXPORT double pos2w_file_size() { return g_job ? double(g_job->file_pos) : 0; }
 
 // Frees all memory held by the last job.
 POS2W_EXPORT void pos2w_reset()
@@ -360,29 +382,25 @@ POS2W_EXPORT int32_t pos2w_hardware_threads()
 POS2W_EXPORT int32_t pos2w_has_aes() { return HAVE_AES; }
 
 // Sets how many threads plot. Call before pos2w_start. Zero means hardware concurrency.
+// Ignored while a plot is running, whose tasks are on the pool.
 POS2W_EXPORT void pos2w_set_threads(int32_t n)
 {
+    if (g_job && g_job->status == kRunning)
+        return;
     if (n <= 0)
         n = static_cast<int32_t>(std::thread::hardware_concurrency());
     pos2w::TaskPool::instance().set_threads(static_cast<unsigned>(n < 1 ? 1 : n));
 }
 
-POS2W_EXPORT int32_t pos2w_threads() { return static_cast<int32_t>(pos2w::TaskPool::instance().threads()); }
+POS2W_EXPORT int32_t pos2w_threads()
+{
+    return static_cast<int32_t>(pos2w::TaskPool::instance().threads());
+}
 
+// GPU exports, named pos2w_gpu_*.
 #define EXPORT_FN POS2W_EXPORT
-#define gpu_request_ptr pos2w_gpu_request_ptr
-#define gpu_enable pos2w_gpu_enable
-#define gpu_enabled pos2w_gpu_enabled
-#define gpu_total_ms pos2w_gpu_total_ms
-#define gpu_reset_total pos2w_gpu_reset_total
-#define gpu_cpu_g pos2w_gpu_cpu_g
-#define gpu_cpu_match_target pos2w_gpu_cpu_match_target
-#define gpu_match_target_bits pos2w_gpu_match_target_bits
+#define GPU_PREFIX pos2w
 #include "gpu_exports.inc"
-#define gpu_set_pairs_mode pos2w_gpu_set_pairs_mode
-#define gpu_split pos2w_gpu_split
-#define gpu_feistel_keys pos2w_gpu_feistel_keys
-#define gpu_cpu_pair pos2w_gpu_cpu_pair
 #include "gpu_plot_exports.inc"
 
 // Milliseconds the last plot spent in one phase of one table. table is 0 (Xs) to 3, phase is

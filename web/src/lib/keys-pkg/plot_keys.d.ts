@@ -1,21 +1,45 @@
 /* tslint:disable */
 /* eslint-disable */
 
+/**
+ * A derived plot's identity, for the plotter and the file name.
+ */
 export class DerivedPlot {
     private constructor();
     free(): void;
     [Symbol.dispose](): void;
+    /**
+     * The memo for the plot header.
+     */
     readonly memo: Uint8Array;
+    /**
+     * The plot group ID in hex. Plots with the same group ID pass the filter together.
+     */
     readonly plot_group_id_hex: string;
+    /**
+     * The plot ID bytes, for the plotter.
+     */
     readonly plot_id: Uint8Array;
+    /**
+     * The plot ID in hex, for the file name.
+     */
     readonly plot_id_hex: string;
+    /**
+     * The plot public key in hex.
+     */
     readonly plot_public_key: string;
 }
 
+/**
+ * What a plot's memo says about it.
+ */
 export class MemoInfo {
     private constructor();
     free(): void;
     [Symbol.dispose](): void;
+    /**
+     * The farmer public key in hex.
+     */
     readonly farmer_public_key: string;
     /**
      * Plots with the same group ID pass the plot filter together.
@@ -46,21 +70,32 @@ export function check_address(address: string): string;
 export function check_public_key(hex_str: string): string;
 
 /**
- * Browser entry point. Exactly one of `pool_public_key` and `pool_contract_address` must be
+ * Derives a new plot. Exactly one of `pool_public_key` and `pool_contract_address` must be
  * non-empty. `seed` must be 32 random bytes.
+ *
+ * # Errors
+ *
+ * Fails on a bad seed, key or address, or when both or neither pool is set.
  */
 export function derive(seed: Uint8Array, farmer_public_key: string, pool_public_key: string, pool_contract_address: string, strength: number, plot_index: number, meta_group: number): DerivedPlot;
 
 /**
  * Derives another plot in the same group as an existing plot, from that plot's memo. The
  * memo holds the plot secret key, so the new plot shares its plot key and group ID.
+ *
+ * # Errors
+ *
+ * Fails if the memo does not parse.
  */
 export function derive_from_memo(memo: Uint8Array, strength: number, plot_index: number, meta_group: number): DerivedPlot;
 
 /**
- * Decodes a plot memo (pool key or contract puzzle hash, farmer key, plot secret key) and
- * recomputes the plot ID the same way `create_v2_plots()` does. `address_prefix` is "xch"
- * or "txch".
+ * Decodes a plot memo and recomputes the plot ID the same way `create_v2_plots()` does.
+ * `address_prefix` is "xch" or "txch".
+ *
+ * # Errors
+ *
+ * Fails if the memo does not parse or the prefix is invalid.
  */
 export function inspect_memo(memo: Uint8Array, strength: number, plot_index: number, meta_group: number, address_prefix: string): MemoInfo;
 

@@ -5,39 +5,40 @@
 // smaller k sizes use the wasm32 build. Plotting itself runs on a pthread inside the
 // module, so this worker stays responsive and polls for progress.
 
-import { GpuG, pairStats, selfTest, serve, type GpuHost } from "./gpu";
+import { type GpuAttachment, type GpuHost, type GpuWorkerState, type Pointer, attachGpu, pointerFor, ptr } from "./gpu";
 import type { FromWorker, PlotJob, ToWorker } from "./protocol";
 
 declare const self: DedicatedWorkerGlobalScope;
 
+// Exports of pos2w32 and pos2w64. Pointers and sizes are BigInt in pos2w64 and Numbers in
+// pos2w32: build arguments with pointerFor() and read results with ptr().
 interface Pos2Module {
   wasmMemory: WebAssembly.Memory;
-  _malloc(n: number | bigint): number | bigint;
-  _free(p: number | bigint): void;
-  UTF8ToString(p: number | bigint): string;
+  _malloc(n: Pointer): Pointer;
+  _free(p: Pointer): void;
+  UTF8ToString(p: number): string;
   _pos2w_set_threads(n: number): void;
   _pos2w_threads(): number;
   _pos2w_start(
-    plotId: number | bigint, k: number, strength: number, index: number, metaGroup: number,
-    memo: number | bigint, memoLen: number, testnet: number,
+    plotId: Pointer, k: number, strength: number, index: number, metaGroup: number, memo: Pointer, memoLen: number,
+    testnet: number,
   ): number;
   _pos2w_status(): number;
   _pos2w_progress(): number;
   _pos2w_phase(): number;
   _pos2w_table(): number;
   _pos2w_timing_ms(t: number): number;
-  _pos2w_error(): number | bigint;
+  _pos2w_error(): Pointer;
   _pos2w_cancel(): void;
   _pos2w_pause(on: number): void;
   _pos2w_begin_write(): number;
-  _pos2w_next_chunk(): number | bigint;
+  _pos2w_next_chunk(): Pointer;
   _pos2w_chunk_len(): number;
   _pos2w_num_chunks(): number;
-  _pos2w_header(): number | bigint;
+  _pos2w_header(): Pointer;
   _pos2w_header_len(): number;
   _pos2w_reset(): void;
   _pos2w_gpu_enable(on: number): void;
-  _pos2w_gpu_enabled(): number;
   _pos2w_gpu_total_ms(): number;
   _pos2w_gpu_reset_total(): void;
   _pos2w_gpu_set_pairs_mode(mode: number): void;
@@ -45,7 +46,10 @@ interface Pos2Module {
   _pos2w_phase_ms(table: number, phase: number): number;
 }
 
-const Status = { running: 1, plotted: 2, cancelled: -2, error: -1 } as const;
+// pos2w.cpp's Status values this worker checks for.
+const Status = { running: 1, plotted: 2, cancelled: -2 } as const;
+// pos2w::gpu::PairsMode.
+const PairsMode = { off: 0, gpu: 1, hybrid: 2 } as const;
 const phaseNames = ["idle", "plotting", "allocating", "matching", "sorting", "done", "error"];
 
 const modules = new Map<string, Promise<Pos2Module>>();
@@ -67,9 +71,9 @@ function loadModule(variant: "32" | "64"): Promise<Pos2Module> {
 }
 
 let cancelRequested = false;
+// Kept across plots: a pause pressed between plots holds the next one.
 let paused = false;
-// One GPU device per worker, created on first use. undefined means not tried yet.
-let gpu: GpuG | null | undefined;
+const gpuState: GpuWorkerState = {};
 let current: Pos2Module | null = null;
 
 const post = (msg: FromWorker) => self.postMessage(msg);
@@ -96,7 +100,7 @@ async function openWriter(job: PlotJob): Promise<FileWriter> {
       abort: () => w.abort(),
     };
   }
-  const root = await navigator.storage.getDirectory();
+  const root = await (await navigator.storage.getDirectory()).getDirectoryHandle(job.sink.folder, { create: true });
   const handle = await root.getFileHandle(job.filename, { create: true });
   const access = await handle.createSyncAccessHandle();
   access.truncate(0);
@@ -119,71 +123,77 @@ async function openWriter(job: PlotJob): Promise<FileWriter> {
   };
 }
 
+const errorText = (e: unknown) => (e instanceof Error ? e.message : String(e));
+
+// Sets the module's GPU options for this plot, then attaches the GPU unless it is off.
+async function setUpGpu(M: Pos2Module, job: PlotJob): Promise<GpuAttachment> {
+  M._pos2w_gpu_reset_total();
+  M._pos2w_gpu_set_pairs_mode(PairsMode[job.gpu]);
+  if (job.gpu === "off") {
+    M._pos2w_gpu_enable(0);
+    return { note: "GPU off in settings", stillEnabled: () => false, stop: () => {} };
+  }
+  return attachGpu(gpuState, M as unknown as GpuHost, "pos2w", {
+    plotId: job.plotId, k: job.k, testnet: job.testnet, strength: job.strength, pairs: true, memory64: job.k > 26,
+  });
+}
+
+// What the GPU did during the plot, for the history row.
+function gpuSummary(M: Pos2Module, job: PlotJob, gpu: GpuAttachment): string {
+  if (!gpu.stats) return gpu.note;
+  if (!gpu.stillEnabled()) return "GPU failed during the plot, finished on CPU";
+  let note = gpu.note;
+  if (job.gpu === "hybrid") {
+    const share = [1, 2, 3].map((t) => `${Math.round(M._pos2w_gpu_split(t) * 100)}%`).join("/");
+    note += `, hybrid: GPU did ${share} of tables 1/2/3`;
+  }
+  const s = gpu.stats;
+  if (s.requests) {
+    const sec = (ms: number) => `${(ms / 1000).toFixed(1)} s`;
+    note += `, table pairs: ${sec(s.uploadMs)} upload, ${sec(s.gpuMs)} GPU, ${sec(s.copyMs)} copy back`;
+  }
+  return note;
+}
+
 async function runPlot(job: PlotJob) {
   cancelRequested = false;
-  paused = false;
   const t0 = performance.now();
   post({ type: "progress", phase: "loading", fraction: 0, table: 0, detail: "loading plotter" });
+  // Must match pointerFor(job.k > 26) below.
   const variant = job.k > 26 ? "64" : "32";
   const M = await loadModule(variant);
   current = M;
-  const big = variant === "64";
-  const toPtr = (n: number) => (big ? BigInt(n) : n);
-  // memory64 pointers arrive as BigInt. wasm32 pointers arrive as signed i32, so anything
-  // above 2 GB (k26 heaps get there) is negative unless converted with >>> 0.
-  const fromPtr = (p: number | bigint) => (typeof p === "bigint" ? Number(p) : p >>> 0);
 
   M._pos2w_reset();
   // In hybrid mode this worker's own thread feeds the GPU while the plot threads work, so
   // leave it a core.
   M._pos2w_set_threads(job.gpu === "hybrid" ? Math.max(1, job.threads - 1) : job.threads);
-  Object.assign(pairStats, { uploadMs: 0, gpuMs: 0, copyMs: 0, requests: 0 });
-
-  // Attach the GPU for g(x) if allowed, available, and it agrees with the CPU on a sample.
-  M._pos2w_gpu_enable(0);
-  M._pos2w_gpu_reset_total();
-  let gpuNote = job.gpu !== "off" ? "" : "GPU off in settings";
-  let service: { stop(): void } | null = null;
-  M._pos2w_gpu_set_pairs_mode(job.gpu === "gpu" ? 1 : job.gpu === "hybrid" ? 2 : 0);
-  if (job.gpu !== "off") {
-    try {
-      if (gpu === undefined || gpu?.lost) gpu = await GpuG.create();
-      if (!gpu) {
-        gpuNote = "no WebGPU adapter";
-      } else if (await selfTest(gpu, M as unknown as GpuHost, "pos2w", big, job.plotId, job.k, job.testnet, job.strength, true)) {
-        service = serve(gpu, M as unknown as GpuHost, "pos2w", (m) => console.warn(m));
-        M._pos2w_gpu_enable(1);
-        gpuNote = gpu.adapterInfo || "GPU";
-      } else {
-        gpuNote = "GPU self test failed";
-        gpu = null;
-      }
-    } catch (e) {
-      gpuNote = `GPU unavailable: ${e instanceof Error ? e.message : e}`;
-      gpu = null;
-    }
+  const gpu = await setUpGpu(M, job);
+  try {
+    await plotAndWrite(M, job, gpu, t0);
+  } finally {
+    gpu.stop();
   }
+}
 
+async function plotAndWrite(M: Pos2Module, job: PlotJob, gpu: GpuAttachment, t0: number) {
   // The heap grows on the plot thread, which leaves Emscripten's HEAPU8 view on this
   // thread pointing at the old, shorter buffer. Always build a fresh view.
   const heap = () => new Uint8Array(M.wasmMemory.buffer);
+  const at = pointerFor(job.k > 26);
+  const errorMessage = () => M.UTF8ToString(ptr(M._pos2w_error()));
   const alloc = (bytes: Uint8Array) => {
-    const p = fromPtr(M._malloc(toPtr(bytes.length)));
+    const p = ptr(M._malloc(at(bytes.length)));
     heap().set(bytes, p);
     return p;
   };
   const pId = alloc(job.plotId);
   const pMemo = alloc(job.memo);
-  const rc = M._pos2w_start(
-    toPtr(pId), job.k, job.strength, job.plotIndex, job.metaGroup, toPtr(pMemo), job.memo.length, job.testnet ? 1 : 0,
-  );
-  M._free(toPtr(pId));
-  M._free(toPtr(pMemo));
-  if (rc !== 0) {
-    M._pos2w_gpu_enable(0);
-    service?.stop();
-    throw new Error(`plotter rejected parameters (code ${rc})`);
-  }
+  const rc = M._pos2w_start(at(pId), job.k, job.strength, job.plotIndex, job.metaGroup, at(pMemo), job.memo.length, job.testnet ? 1 : 0);
+  M._free(at(pId));
+  M._free(at(pMemo));
+  if (rc !== 0) throw new Error(`plotter rejected parameters (code ${rc})`);
+  M._pos2w_pause(paused ? 1 : 0);
 
   while (M._pos2w_status() === Status.running) {
     await sleep(200);
@@ -199,17 +209,8 @@ async function runPlot(job: PlotJob) {
     });
   }
   const gpuMs = M._pos2w_gpu_total_ms();
-  if (service && !M._pos2w_gpu_enabled()) gpuNote = "GPU failed during the plot, finished on CPU";
-  else if (service && job.gpu === "hybrid") {
-    const share = [1, 2, 3].map((t) => `${Math.round(M._pos2w_gpu_split(t) * 100)}%`).join("/");
-    gpuNote += `, hybrid: GPU did ${share} of tables 1/2/3`;
-  }
-  if (pairStats.requests) {
-    const sec = (ms: number) => `${(ms / 1000).toFixed(1)} s`;
-    gpuNote += `, table pairs: ${sec(pairStats.uploadMs)} upload, ${sec(pairStats.gpuMs)} GPU, ${sec(pairStats.copyMs)} copy back`;
-  }
-  M._pos2w_gpu_enable(0);
-  service?.stop();
+  const gpuNote = gpuSummary(M, job, gpu);
+  gpu.stop();
   const status = M._pos2w_status();
   if (status === Status.cancelled) {
     M._pos2w_reset();
@@ -217,7 +218,7 @@ async function runPlot(job: PlotJob) {
     return;
   }
   if (status !== Status.plotted) {
-    let message = M.UTF8ToString(fromPtr(M._pos2w_error())) || `plotter failed (status ${status})`;
+    let message = errorMessage() || `plotter failed (status ${status})`;
     if (/bad_alloc|allocation failed/i.test(message)) {
       const gb = (M.wasmMemory.buffer.byteLength / 1e9).toFixed(1);
       message = `ran out of memory with ${gb} GB in use. k${job.k} needs about ${job.k >= 28 ? "11" : "3"} GB for the plotter. Close other apps or tabs and try again.`;
@@ -232,7 +233,7 @@ async function runPlot(job: PlotJob) {
   let bytes = 0;
   try {
     const headerSize = M._pos2w_begin_write();
-    if (headerSize < 0) throw new Error(M.UTF8ToString(fromPtr(M._pos2w_error())) || "failed to prepare plot");
+    if (headerSize < 0) throw new Error(errorMessage() || "failed to prepare plot");
     const numChunks = M._pos2w_num_chunks();
     // Reserve the header. It is rewritten with the real chunk offsets at the end.
     await writer.write(0, new Uint8Array(headerSize));
@@ -241,7 +242,7 @@ async function runPlot(job: PlotJob) {
       if (cancelRequested) throw new DOMException("cancelled", "AbortError");
       // The write loop runs here in JavaScript, so pausing it is just waiting.
       while (paused && !cancelRequested) await sleep(100);
-      const p = fromPtr(M._pos2w_next_chunk());
+      const p = ptr(M._pos2w_next_chunk());
       if (!p) break;
       const len = M._pos2w_chunk_len();
       // slice() copies out of the shared WASM heap, which file APIs do not accept.
@@ -255,8 +256,8 @@ async function runPlot(job: PlotJob) {
         });
       }
     }
-    if (M._pos2w_status() < 0) throw new Error(M.UTF8ToString(fromPtr(M._pos2w_error())));
-    const h = fromPtr(M._pos2w_header());
+    if (M._pos2w_status() < 0) throw new Error(errorMessage());
+    const h = ptr(M._pos2w_header());
     await writer.write(0, heap().slice(h, h + M._pos2w_header_len()));
     file = await writer.close();
     bytes = pos;
@@ -296,7 +297,7 @@ self.onmessage = (ev: MessageEvent<ToWorker>) => {
   }
   if (msg.type === "plot") {
     runPlot(msg.job).catch((e: unknown) => {
-      post({ type: "error", message: e instanceof Error ? e.message : String(e) });
+      post({ type: "error", message: errorText(e) });
     });
   }
 };

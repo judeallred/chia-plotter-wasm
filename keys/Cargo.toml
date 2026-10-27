@@ -1,8 +1,14 @@
 [package]
 name = "plot-keys"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
+rust-version = "1.85"
 description = "Chia v2 plot ID and memo derivation for the browser"
+license = "Apache-2.0"
+repository = "https://github.com/judeallred/chia-plotter-wasm"
+readme = "../README.md"
+keywords = ["chia", "plot", "wasm"]
+categories = ["cryptography", "wasm"]
 publish = false
 
 [lib]
@@ -18,3 +24,39 @@ wasm-bindgen = "0.2"
 [profile.release]
 opt-level = "s"
 lto = true
+
+[lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
+missing_debug_implementations = "warn"
+unreachable_pub = "warn"
+unused_qualifications = "warn"
+
+# Every default, pedantic, nursery and cargo lint, plus a set of restriction lints that ban
+# panicking and lossy shortcuts. scripts/check-rust.sh runs clippy with -D warnings.
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+nursery = { level = "warn", priority = -1 }
+cargo = { level = "warn", priority = -1 }
+# Duplicate versions come from chia-bls's dependency tree, not from this crate.
+multiple_crate_versions = "allow"
+unwrap_used = "warn"
+expect_used = "warn"
+panic = "warn"
+indexing_slicing = "warn"
+as_conversions = "warn"
+string_slice = "warn"
+todo = "warn"
+unimplemented = "warn"
+dbg_macro = "warn"
+print_stdout = "warn"
+print_stderr = "warn"
+allow_attributes_without_reason = "warn"
+clone_on_ref_ptr = "warn"
+missing_assert_message = "warn"
+undocumented_unsafe_blocks = "warn"
+unneeded_field_pattern = "warn"
+rest_pat_in_fully_bound_structs = "warn"
+str_to_string = "warn"
+semicolon_if_nothing_returned = "warn"

@@ -20,4 +20,5 @@ cp core/build-wasm32/pos2w32.{js,wasm} core/build-wasm32/pos2v.{js,wasm} core/bu
 llvm_bin="${LLVM_BIN:-$(brew --prefix llvm 2>/dev/null)/bin}"
 (cd keys && CC_wasm32_unknown_unknown="$llvm_bin/clang" AR_wasm32_unknown_unknown="$llvm_bin/llvm-ar" \
   wasm-pack build --release --target web --out-dir ../web/src/lib/keys-pkg)
-rm -f web/src/lib/keys-pkg/.gitignore
+# wasm-pack copies these in; the package is only used by the page.
+rm -f web/src/lib/keys-pkg/.gitignore web/src/lib/keys-pkg/README.md

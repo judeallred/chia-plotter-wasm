@@ -1,5 +1,8 @@
 /* @ts-self-types="./plot_keys.d.ts" */
 
+/**
+ * A derived plot's identity, for the plotter and the file name.
+ */
 export class DerivedPlot {
     static __wrap(ptr) {
         const obj = Object.create(DerivedPlot.prototype);
@@ -18,6 +21,7 @@ export class DerivedPlot {
         wasm.__wbg_derivedplot_free(ptr, 0);
     }
     /**
+     * The memo for the plot header.
      * @returns {Uint8Array}
      */
     get memo() {
@@ -27,6 +31,7 @@ export class DerivedPlot {
         return v1;
     }
     /**
+     * The plot group ID in hex. Plots with the same group ID pass the filter together.
      * @returns {string}
      */
     get plot_group_id_hex() {
@@ -42,6 +47,7 @@ export class DerivedPlot {
         }
     }
     /**
+     * The plot ID bytes, for the plotter.
      * @returns {Uint8Array}
      */
     get plot_id() {
@@ -51,6 +57,7 @@ export class DerivedPlot {
         return v1;
     }
     /**
+     * The plot ID in hex, for the file name.
      * @returns {string}
      */
     get plot_id_hex() {
@@ -66,6 +73,7 @@ export class DerivedPlot {
         }
     }
     /**
+     * The plot public key in hex.
      * @returns {string}
      */
     get plot_public_key() {
@@ -83,6 +91,9 @@ export class DerivedPlot {
 }
 if (Symbol.dispose) DerivedPlot.prototype[Symbol.dispose] = DerivedPlot.prototype.free;
 
+/**
+ * What a plot's memo says about it.
+ */
 export class MemoInfo {
     static __wrap(ptr) {
         const obj = Object.create(MemoInfo.prototype);
@@ -101,6 +112,7 @@ export class MemoInfo {
         wasm.__wbg_memoinfo_free(ptr, 0);
     }
     /**
+     * The farmer public key in hex.
      * @returns {string}
      */
     get farmer_public_key() {
@@ -223,8 +235,12 @@ export function check_public_key(hex_str) {
 }
 
 /**
- * Browser entry point. Exactly one of `pool_public_key` and `pool_contract_address` must be
+ * Derives a new plot. Exactly one of `pool_public_key` and `pool_contract_address` must be
  * non-empty. `seed` must be 32 random bytes.
+ *
+ * # Errors
+ *
+ * Fails on a bad seed, key or address, or when both or neither pool is set.
  * @param {Uint8Array} seed
  * @param {string} farmer_public_key
  * @param {string} pool_public_key
@@ -253,6 +269,10 @@ export function derive(seed, farmer_public_key, pool_public_key, pool_contract_a
 /**
  * Derives another plot in the same group as an existing plot, from that plot's memo. The
  * memo holds the plot secret key, so the new plot shares its plot key and group ID.
+ *
+ * # Errors
+ *
+ * Fails if the memo does not parse.
  * @param {Uint8Array} memo
  * @param {number} strength
  * @param {number} plot_index
@@ -270,9 +290,12 @@ export function derive_from_memo(memo, strength, plot_index, meta_group) {
 }
 
 /**
- * Decodes a plot memo (pool key or contract puzzle hash, farmer key, plot secret key) and
- * recomputes the plot ID the same way `create_v2_plots()` does. `address_prefix` is "xch"
- * or "txch".
+ * Decodes a plot memo and recomputes the plot ID the same way `create_v2_plots()` does.
+ * `address_prefix` is "xch" or "txch".
+ *
+ * # Errors
+ *
+ * Fails if the memo does not parse or the prefix is invalid.
  * @param {Uint8Array} memo
  * @param {number} strength
  * @param {number} plot_index

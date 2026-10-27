@@ -17,11 +17,13 @@ function open(): Promise<IDBDatabase> {
 export async function loadDir(session: string): Promise<FileSystemDirectoryHandle | null> {
   try {
     const db = await open();
-    return await new Promise((resolve) => {
+    const dir = await new Promise<FileSystemDirectoryHandle | null>((resolve) => {
       const req = db.transaction(STORE).objectStore(STORE).get(key(session));
-      req.onsuccess = () => resolve((req.result as FileSystemDirectoryHandle) ?? null);
+      req.onsuccess = () => resolve((req.result as FileSystemDirectoryHandle | undefined) ?? null);
       req.onerror = () => resolve(null);
     });
+    db.close();
+    return dir;
   } catch {
     return null;
   }
@@ -30,7 +32,13 @@ export async function loadDir(session: string): Promise<FileSystemDirectoryHandl
 export async function saveDir(session: string, dir: FileSystemDirectoryHandle): Promise<void> {
   try {
     const db = await open();
-    db.transaction(STORE, "readwrite").objectStore(STORE).put(dir, key(session));
+    await new Promise<void>((resolve, reject) => {
+      const tx = db.transaction(STORE, "readwrite");
+      tx.objectStore(STORE).put(dir, key(session));
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+    });
+    db.close();
   } catch {
     // Not remembering the folder is fine.
   }

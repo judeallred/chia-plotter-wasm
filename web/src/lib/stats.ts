@@ -1,6 +1,8 @@
 // Live stats panel. Browsers hide most system information, so this shows what the page can
 // actually see: its own memory, CPU pressure, battery, storage quota, and plotting rate.
 
+import { escapeHtml, fmtBytes, fmtMs } from "./format";
+
 type PressureState = "nominal" | "fair" | "serious" | "critical";
 
 interface Battery {
@@ -14,29 +16,12 @@ export interface PlotStatsSource {
   // Largest plotter heap seen this session. WASM memory only grows, so this is the high water mark.
   peakHeapBytes: number;
   finished: { bytes: number; ms: number }[];
-  // GPU work reported by finished plots: g(x) hashes computed and GPU time spent.
-  gpuHashes: number;
+  // Finished plots that used the GPU, and the GPU time they reported.
+  gpuPlots: number;
   gpuMs: number;
-  // How the last plot computed g(x): the adapter, or why it used the CPU.
+  // What the GPU did for the last plot, or why it used the CPU.
   lastGpuNote: string;
   lastUsedGpu: boolean | null;
-}
-
-function fmtCount(n: number) {
-  if (n >= 1e9) return `${(n / 1e9).toFixed(2)} billion`;
-  if (n >= 1e6) return `${(n / 1e6).toFixed(1)} million`;
-  return n.toLocaleString();
-}
-
-function fmtDuration(ms: number) {
-  return ms >= 1000 ? `${(ms / 1000).toFixed(1)} s` : `${Math.round(ms)} ms`;
-}
-
-function fmtBytes(n: number) {
-  if (n >= 1e12) return `${(n / 1e12).toFixed(2)} TB`;
-  if (n >= 1e9) return `${(n / 1e9).toFixed(2)} GB`;
-  if (n >= 1e6) return `${(n / 1e6).toFixed(0)} MB`;
-  return `${(n / 1e3).toFixed(0)} kB`;
 }
 
 export function startStats(el: HTMLElement, source: PlotStatsSource) {
@@ -47,8 +32,9 @@ export function startStats(el: HTMLElement, source: PlotStatsSource) {
     el.innerHTML = order
       .filter((k) => values.has(k))
       .map((k) => {
-        const v = values.get(k)!;
-        return `<div class="stat${v.bad ? " bad" : ""}"${v.title ? ` title="${v.title}"` : ""}>${v.text}</div>`;
+        const v = values.get(k);
+        if (!v) return "";
+        return `<div class="stat${v.bad ? " bad" : ""}"${v.title ? ` title="${escapeHtml(v.title)}"` : ""}>${v.text}</div>`;
       })
       .join("");
   };
@@ -88,7 +74,7 @@ export function startStats(el: HTMLElement, source: PlotStatsSource) {
       update();
       b.addEventListener("levelchange", update);
       b.addEventListener("chargingchange", update);
-    });
+    }).catch(() => {});
   }
 
   // WebGPU exposes the adapter's identity, limits and features, not utilization,
@@ -107,7 +93,7 @@ export function startStats(el: HTMLElement, source: PlotStatsSource) {
       return;
     }
     const name = [a.info?.vendor, a.info?.architecture, a.info?.device].filter(Boolean).join(" ") || "unknown adapter";
-    set("gpu", `GPU <b>${name}</b>${a.isFallbackAdapter ? " (software fallback)" : ""}`, false, a.info?.description || "");
+    set("gpu", `GPU <b>${escapeHtml(name)}</b>${a.isFallbackAdapter ? " (software fallback)" : ""}`, false, a.info?.description || "");
     const notable = ["shader-f16", "timestamp-query", "subgroups"].filter((f) => a.features.has(f));
     set(
       "gpulimits",
@@ -133,16 +119,15 @@ export function startStats(el: HTMLElement, source: PlotStatsSource) {
     }
 
     if (source.lastUsedGpu !== null) {
-      if (source.gpuHashes > 0 && source.gpuMs > 0) {
-        const rate = source.gpuHashes / (source.gpuMs / 1000);
+      if (source.gpuPlots > 0) {
         set(
           "gpuwork",
-          `GPU g(x): <b>${fmtCount(source.gpuHashes)}</b> hashes in ${fmtDuration(source.gpuMs)}, about <b>${Math.round(rate / 1e6)} million/s</b>`,
+          `GPU work: <b>${source.gpuPlots}</b> plot${source.gpuPlots === 1 ? "" : "s"}, about <b>${fmtMs(source.gpuMs / source.gpuPlots)}</b> of GPU time each`,
           false,
-          `Last plot: ${source.lastGpuNote}. Includes copying results back into the plotter.`,
+          `Last plot: ${source.lastGpuNote}. GPU time includes moving data between the plotter and the GPU.`,
         );
       } else {
-        set("gpuwork", `Last plot ran g(x) on the CPU: ${source.lastGpuNote || "GPU off"}`, !source.lastUsedGpu && source.lastGpuNote !== "GPU off in settings");
+        set("gpuwork", `Last plot ran on the CPU: ${escapeHtml(source.lastGpuNote || "GPU off")}`, !source.lastUsedGpu && source.lastGpuNote !== "GPU off in settings");
       }
     }
 

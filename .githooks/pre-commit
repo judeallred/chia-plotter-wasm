@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# Enable with: git config core.hooksPath .githooks
+# Runs the Rust checks when a commit touches the Rust crate.
+set -euo pipefail
+if git diff --cached --name-only | grep -q '^keys/'; then
+  scripts/check-rust.sh
+fi

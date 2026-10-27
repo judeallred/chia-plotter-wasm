@@ -11,10 +11,13 @@
 // Solving runs on a background thread (pos2v_start, then poll pos2v_status) so the
 // calling JavaScript thread stays free to service GPU requests from the solver.
 
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <cstring>
+#include <optional>
+#include <span>
 #include <string>
 #include <thread>
 #include <vector>
@@ -57,7 +60,8 @@ double ms_since(std::chrono::steady_clock::time_point t)
 
 // Finds qualities on the calling thread. The Emscripten file system is not safe to use
 // from other threads here: reads proxied to the main thread stall.
-bool find_qualities(char const* path, std::span<uint8_t const, 32> challenge, std::vector<QualityChain>& out)
+bool find_qualities(
+    char const* path, std::span<uint8_t const, 32> challenge, std::vector<QualityChain>& out)
 {
     auto const t_prove = std::chrono::steady_clock::now();
     try {
@@ -93,7 +97,8 @@ void solve_all(std::vector<QualityChain> qualities,
             std::array<uint32_t, TOTAL_T1_PAIRS_IN_PROOF> x_bits;
             size_t idx = 0;
             for (int i = 0; i < TOTAL_PROOF_FRAGMENTS_IN_PROOF; ++i) {
-                for (uint32_t const x: codec.get_x_bits_from_proof_fragment(quality.chain_links[i])) {
+                for (uint32_t const x:
+                    codec.get_x_bits_from_proof_fragment(quality.chain_links[i])) {
                     x_bits[idx++] = x;
                 }
             }
@@ -123,7 +128,9 @@ void solve_all(std::vector<QualityChain> qualities,
 
 // Runs one challenge against the plot at path. Finding qualities happens before this
 // returns, solving continues in the background: poll pos2v_status() until it is no longer
-// 1 (running). Returns 0 if accepted. plot_id and challenge must point to 32 bytes.
+// 1 (running). Returns a negative number if the arguments are rejected, otherwise 0, even
+// when the plot cannot be read: that shows up as an error status and pos2v_error().
+// plot_id and challenge must point to 32 bytes.
 POS2V_EXPORT int32_t pos2v_start(char const* path,
     uint8_t const* plot_id,
     int32_t k,
@@ -164,13 +171,7 @@ POS2V_EXPORT int32_t pos2v_solved() { return g_result.solved; }
 POS2V_EXPORT int32_t pos2v_valid() { return g_result.valid; }
 POS2V_EXPORT char const* pos2v_error() { return g_error.c_str(); }
 
+// GPU exports, named pos2v_gpu_*.
 #define EXPORT_FN POS2V_EXPORT
-#define gpu_request_ptr pos2v_gpu_request_ptr
-#define gpu_enable pos2v_gpu_enable
-#define gpu_enabled pos2v_gpu_enabled
-#define gpu_total_ms pos2v_gpu_total_ms
-#define gpu_reset_total pos2v_gpu_reset_total
-#define gpu_cpu_g pos2v_gpu_cpu_g
-#define gpu_cpu_match_target pos2v_gpu_cpu_match_target
-#define gpu_match_target_bits pos2v_gpu_match_target_bits
+#define GPU_PREFIX pos2v
 #include "gpu_exports.inc"

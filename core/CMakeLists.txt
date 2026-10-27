@@ -28,35 +28,35 @@ function(pos2w_edit var old new)
   set(${var} "${result}" PARENT_SCOPE)
 endfunction()
 
-# Plotter.hpp: upstream copies the final proof fragments into PlotData instead of moving
-# them, which costs 2 GB of peak memory at k28 and decides whether k28 fits in a tab. Also
-# swap in the Xs constructor that can run g(x) on the GPU.
 # plot/ and solve/ are copied whole. Their headers include each other by relative path, so
 # a patched header is only used consistently if its neighbours come from gen/ too.
 file(COPY ${POS2_DIR}/src/plot ${POS2_DIR}/src/solve DESTINATION ${GEN_DIR})
 
-# TableConstructorGeneric.hpp: give part of each section to the GPU (see table_gpu.hpp).
-# The CPU loop starts after the GPU's share, and the GPU's pairs are collected once the
-# section's CPU work is done.
+# TableConstructorGeneric.hpp: run the Xs g(x) pass on the GPU when one is attached, and
+# give part of each table section to the GPU (see table_gpu.hpp). The CPU loop starts after
+# the GPU's share, and the GPU's pairs are collected once the section's CPU work is done.
 file(READ ${GEN_DIR}/plot/TableConstructorGeneric.hpp tcg_src)
 pos2w_edit(tcg_src "#include \"pos/ProofValidator.hpp\"" "#include \"pos/ProofValidator.hpp\"\n#include \"table_gpu.hpp\"")
 pos2w_edit(tcg_src
   "uint64_t const l_start_u64 = prefix.row(section_l)[0];"
   "pos2w::GpuSection pos2w_gpu(*this, params_, int(table_id_), std::span<PairingCandidate const>(previous_table_pairs.data(), previous_table_pairs.size()), prefix.row(section_l), prefix.row(section_r), num_match_keys, out_pairs, out_count);\n            uint64_t const l_start_u64 = prefix.row(section_l)[0] + pos2w_gpu.gpu_count();")
 pos2w_edit(tcg_src
+  "parallel_for_range(uint64_t(0), num_xs_u64, [this, out_span](uint64_t x_val) mutable {"
+  "if (!pos2w::gpu_fill_xs(params_, out_span))\n        parallel_for_range(uint64_t(0), num_xs_u64, [this, out_span](uint64_t x_val) mutable {")
+pos2w_edit(tcg_src
   "            section_l = section_r;"
   "            timings.find_pairs_time_ms += pos2w_gpu.finish();\n            section_l = section_r;")
 file(WRITE ${GEN_DIR}/plot/TableConstructorGeneric.hpp "${tcg_src}")
 
+# Plotter.hpp: upstream copies the final proof fragments into PlotData instead of moving
+# them, which costs 2 GB of peak memory at k28 and decides whether k28 fits in a tab.
 file(READ ${GEN_DIR}/plot/Plotter.hpp plotter_src)
 pos2w_edit(plotter_src
   "plot_data.t3_proof_fragments = t3_proof_fragments;"
   "plot_data.t3_proof_fragments = std::move(t3_proof_fragments);")
-pos2w_edit(plotter_src "#include \"common/Timer.hpp\"" "#include \"common/Timer.hpp\"\n#include \"xs_gpu.hpp\"")
-pos2w_edit(plotter_src
-  "XsConstructor xs_gen_ctor(proof_params_, sink);"
-  "pos2w::GpuXsConstructor xs_gen_ctor(proof_params_, sink);")
+pos2w_edit(plotter_src "#include \"common/Timer.hpp\"" "#include \"common/Timer.hpp\"\n#include \"phase_timings.hpp\"")
 # Record each table's phase timings (hash, sort, find pairs, post sort) for the UI.
+pos2w_edit(plotter_src "auto xs_candidates = xs_gen_ctor.construct(" "pos2w::PhaseRecorder xs_recorder(0, xs_gen_ctor.timings);\n        auto xs_candidates = xs_gen_ctor.construct(")
 foreach(t 1 2 3)
   if(t EQUAL 3)
     set(var t3_results)
@@ -80,10 +80,11 @@ pos2w_edit(solver_src
   "${solver_inject}    void filterX2Candidates_cpu(std::span<uint32_t const> const x1_bitmask,")
 file(WRITE ${GEN_DIR}/solve/Solver.hpp "${solver_src}")
 
+# Re-run the copy and patch step when anything in the copied directories changes, not just
+# the patched headers, or an upstream bump would leave stale copies in gen/.
+file(GLOB POS2_COPIED_SOURCES ${POS2_DIR}/src/plot/* ${POS2_DIR}/src/solve/*)
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
-  ${POS2_DIR}/src/plot/Plotter.hpp ${POS2_DIR}/src/solve/Solver.hpp
-  ${CMAKE_CURRENT_SOURCE_DIR}/src/solver_gpu_inject.inc
-  ${POS2_DIR}/src/plot/TableConstructorGeneric.hpp)
+  ${POS2_COPIED_SOURCES} ${CMAKE_CURRENT_SOURCE_DIR}/src/solver_gpu_inject.inc)
 
 add_library(pos2w_core INTERFACE)
 # Search order matters: gen/ and overrides/ shadow upstream files.
@@ -95,7 +96,7 @@ if(EMSCRIPTEN)
   option(POS2W_MEMORY64 "Build with wasm memory64 (needed for k28)" OFF)
   set(common_flags -O3 -pthread -msimd128 -fwasm-exceptions)
   if(POS2W_MEMORY64)
-    list(APPEND common_flags -sMEMORY64=1)
+    list(APPEND common_flags -m64)
   endif()
   target_compile_options(fse PRIVATE ${common_flags})
   target_compile_options(pos2w_core INTERFACE ${common_flags})

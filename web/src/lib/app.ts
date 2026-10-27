@@ -1,409 +1,223 @@
-// Page logic: settings form, environment checks, and the plot queue.
+// Page logic: wires the settings form, the existing plot pickers, the plot queue, and the
+// validate section together. The parts live in their own modules.
 
-import initKeys, { check_address, check_public_key, derive, derive_from_memo, inspect_memo } from "./keys-pkg/plot_keys.js";
-import type { FromWorker, GpuMode, PlotJob, Sink, Timings } from "./protocol";
+import { $, pickDirectory, wireFileButtons } from "./dom";
+import { setupEstimates } from "./estimates";
+import { type ContinueGroup, type DriveKey, collectDrives, collectGroups, describeKeys, setupPlotSource } from "./existing-plots";
+import { fmtAgo, fmtBytes, fmtMs } from "./format";
+import { History } from "./history";
+import initKeys from "./keys-pkg/plot_keys.js";
+import { claimPlotStorage } from "./plot-storage";
+import { planPlots } from "./plan";
+import type { FromWorker, PlotJob, Sink, Timings } from "./protocol";
 import { loadDir, saveDir } from "./saved-dir";
 import { listSessions, saveSession, startSession } from "./sessions";
-import { startStats, type PlotStatsSource } from "./stats";
-import { Validator, type Report } from "./validate";
+import {
+  type Capabilities, K_SIZES, applySettings, capabilities, readSettings, restoreSettings, summarize, validateSettings,
+} from "./settings";
+import { type PlotStatsSource, startStats } from "./stats";
+import { setupValidateSection } from "./validate-ui";
+import { Validator } from "./validate";
 
-
-interface Settings {
-  farmerKey: string;
-  poolMode: "contract" | "pk";
-  poolAddress: string;
-  poolKey: string;
-  strength: number;
-  k: number;
-  count: number;
-  threads: number;
-  network: "mainnet" | "testnet";
-  output: "dir" | "download";
-  autoChecks: number;
-  // hybrid: tables split between CPU and GPU. gpu: tables on the GPU. off: CPU only.
-  gpu: GpuMode;
-  groupSize: number;
-  metaGroup: number;
-  groupFolders: boolean;
-  groupKeys: "none" | "drive" | "separate" | "shared" | "continue";
-  driveStart: "new" | "continue";
-  driveMetas: number;
-  // Size of the drive being filled, in TB. Only used for estimates on the page.
-  driveTB: number;
-}
-
-const $ = <T extends Element>(sel: string) => document.querySelector(sel) as T;
-
-// A one-page module that declares a memory64 memory. Validates only if memory64 works.
-const MEMORY64_PROBE = new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0, 5, 3, 1, 4, 0]);
-
-function capabilities() {
-  return {
-    isolated: self.crossOriginIsolated === true,
-    threads: navigator.hardwareConcurrency || 4,
-    memory64: WebAssembly.validate(MEMORY64_PROBE),
-    dirPicker: "showDirectoryPicker" in window,
-    opfs: !!navigator.storage?.getDirectory,
-    webgpu: "gpu" in navigator,
-    deviceMemory: (navigator as { deviceMemory?: number }).deviceMemory,
-  };
-}
-
-function renderEnv(caps: ReturnType<typeof capabilities>) {
+function renderEnv(caps: Capabilities) {
   const items: [boolean, string][] = [
     [caps.isolated, caps.isolated ? "Cross-origin isolated (threads available)" : "Not cross-origin isolated, so WASM threads are unavailable"],
     [true, `${caps.threads} logical CPU cores`],
     [caps.memory64, caps.memory64 ? "WebAssembly memory64 supported (k28 possible)" : "No WebAssembly memory64, so k28 is unavailable. Try a recent Chrome, Edge, or Firefox."],
     [caps.dirPicker, caps.dirPicker ? "Can save straight into a folder" : "No folder access, plots will be downloaded"],
-    [true, caps.webgpu ? "WebGPU available, used for the g(x) hash when plotting and validating" : "WebGPU not available, everything runs on the CPU"],
+    [true, caps.webgpu ? "WebGPU available, used for plotting and validating" : "WebGPU not available, everything runs on the CPU"],
   ];
   if (caps.deviceMemory !== undefined) {
     items.push([caps.deviceMemory >= 8, `Browser reports ${caps.deviceMemory} GB of device memory`]);
   }
-  $("#env-list").innerHTML = items
-    .map(([ok, text]) => `<li class="${ok ? "" : "bad"}">${text}</li>`)
-    .join("");
+  $("#env-list").replaceChildren(
+    ...items.map(([ok, text]) => {
+      const li = document.createElement("li");
+      li.textContent = text;
+      li.classList.toggle("bad", !ok);
+      return li;
+    }),
+  );
 }
 
-function readSettings(form: HTMLFormElement): Settings {
-  const f = new FormData(form);
-  const s = (n: string) => String(f.get(n) ?? "").trim();
-  return {
-    farmerKey: s("farmerKey"),
-    poolMode: s("poolMode") === "pk" ? "pk" : "contract",
-    poolAddress: s("poolAddress"),
-    poolKey: s("poolKey"),
-    strength: Number(s("strength")),
-    k: Number(s("k")),
-    count: Number(s("count")),
-    threads: Number(s("threads")),
-    network: s("network") === "testnet" ? "testnet" : "mainnet",
-    output: s("output") === "dir" ? "dir" : "download",
-    autoChecks: Number(s("autoChecks")),
-    gpu: s("gpu") === "off" ? "off" : s("gpu") === "hybrid" ? "hybrid" : "gpu",
-    groupSize: Number(s("groupSize")),
-    metaGroup: Number(s("metaGroup")),
-    groupFolders: f.get("groupFolders") === "on",
-    groupKeys: (["drive", "separate", "shared", "continue"] as const).find((v) => v === s("groupKeys")) ?? "none",
-    driveStart: s("driveStart") === "continue" ? "continue" : "new",
-    driveMetas: Number(s("driveMetas")),
-    driveTB: Number(s("driveTB")),
-  };
-}
+type PlotResult = { ok: true; bytes: number; timings: Timings; file?: File } | { ok: false; reason: string };
 
-function applySettings(form: HTMLFormElement, s: Partial<Settings> | Record<string, unknown>) {
-  for (const [name, value] of Object.entries(s)) {
-    const els = form.querySelectorAll<HTMLInputElement | HTMLSelectElement>(`[name="${name}"]`);
-    els.forEach((el) => {
-      if (el instanceof HTMLInputElement && el.type === "radio") el.checked = el.value === String(value);
-      else if (el instanceof HTMLInputElement && el.type === "checkbox") el.checked = Boolean(value);
-      // A saved value that matches no option would leave the select blank, so skip it.
-      else if (el instanceof HTMLSelectElement && ![...el.options].some((o) => o.value === String(value))) return;
-      else el.value = String(value);
+// The plotter worker, one plot at a time. Shows progress in the status card.
+class Plotter {
+  private worker = Plotter.makeWorker();
+  // Pause state for the current run. Paused time is left out of elapsed time and the ETA.
+  paused = false;
+  stopping = false;
+  private pausedSince = 0;
+  private pausedTotal = 0;
+
+  constructor(
+    private status: { text: HTMLElement; barFill: HTMLElement },
+    private stats: PlotStatsSource,
+  ) {}
+
+  private static makeWorker() {
+    return new Worker(new URL("./plotter.worker.ts", import.meta.url), { type: "module" });
+  }
+
+  run(job: PlotJob): Promise<PlotResult> {
+    return new Promise((resolve) => {
+      const started = performance.now();
+      this.pausedTotal = 0;
+      // A crash (for example running out of memory) leaves the WASM module unusable, so
+      // replace the worker before the next plot.
+      this.worker.onerror = (e) => {
+        e.preventDefault();
+        this.reset();
+        resolve({ ok: false, reason: `plotter crashed: ${e.message || "unknown error"}` });
+      };
+      this.worker.onmessage = (ev: MessageEvent<FromWorker>) => {
+        const m = ev.data;
+        if (m.type === "progress") {
+          if (m.heapBytes) {
+            this.stats.plotterHeapBytes = m.heapBytes;
+            this.stats.peakHeapBytes = Math.max(this.stats.peakHeapBytes, m.heapBytes);
+          }
+          // Once Stop is pressed the status stays on "Stopping…" until the run ends, and while
+          // paused it stays on "Paused".
+          if (this.stopping || this.paused) return;
+          const elapsed = performance.now() - started - this.pausedTotal;
+          const pct = (m.fraction * 100).toFixed(1);
+          const eta = m.phase === "plotting" && m.fraction > 0.05 ? `, about ${fmtMs(elapsed / m.fraction - elapsed)} left` : "";
+          this.status.barFill.style.width = `${100 * m.fraction}%`;
+          this.status.barFill.parentElement?.setAttribute("aria-valuenow", pct);
+          this.status.text.textContent = `${job.filename}: ${m.phase === "writing" ? "writing" : pct + "%"} (${m.detail}), ${fmtMs(elapsed)} elapsed${eta}`;
+        } else if (m.type === "done") {
+          resolve({ ok: true, bytes: m.bytes, timings: m.timings, file: m.file });
+        } else if (m.type === "cancelled") {
+          resolve({ ok: false, reason: "cancelled" });
+        } else {
+          resolve({ ok: false, reason: m.message });
+        }
+      };
+      this.worker.postMessage({ type: "plot", job });
     });
   }
-}
 
-// A k28 plot is about 1 GB, so a 4 TB drive holds about 4,000.
-const K28_PLOT_BYTES = 1e9;
-const drivePlotsOf = (s: Settings) => Math.max(1, Math.round(((s.driveTB > 0 ? s.driveTB : 4) * 1e12) / K28_PLOT_BYTES));
-const fmtTB = (tb: number) => `${(tb > 0 ? tb : 4).toLocaleString(undefined, { maximumFractionDigits: 1 })} TB`;
-
-function validate(s: Settings, caps: ReturnType<typeof capabilities>, continuing: boolean): Record<string, string> {
-  const errors: Record<string, string> = {};
-  // When adding to an existing group, keys come from the group's plots, not the form.
-  if (!continuing) {
-    const farmerErr = s.farmerKey ? check_public_key(s.farmerKey) : "required";
-    if (farmerErr) errors.farmerKey = farmerErr;
-    if (s.poolMode === "contract") {
-      const e = s.poolAddress ? check_address(s.poolAddress) : "required";
-      if (e) errors.poolAddress = e;
-    } else {
-      const e = s.poolKey ? check_public_key(s.poolKey) : "required";
-      if (e) errors.poolKey = e;
-    }
+  setPaused(paused: boolean) {
+    if (paused === this.paused) return;
+    this.paused = paused;
+    this.worker.postMessage({ type: "pause", paused });
+    if (paused) this.pausedSince = performance.now();
+    else this.pausedTotal += performance.now() - this.pausedSince;
   }
-  if (!(s.strength >= 2 && s.strength <= 17)) errors.form = "Strength must be between 2 and 17.";
-  if (!(s.threads >= 1)) errors.form = "Threads must be at least 1.";
-  if (!(Number.isInteger(s.groupSize) && s.groupSize >= 1 && s.groupSize <= 65535)) errors.form = "Plots per group must be 1 to 65535.";
-  if (!(Number.isInteger(s.metaGroup) && s.metaGroup >= 0 && s.metaGroup <= 255)) errors.form = "Meta group must be 0 to 255.";
-  if (!(s.count >= 0)) errors.form = "Number of plots cannot be negative.";
-  if (s.groupKeys === "drive" && !(Number.isInteger(s.driveMetas) && s.driveMetas >= 1 && s.driveMetas <= 256)) errors.form = "Meta groups per drive must be 1 to 256.";
-  if (!caps.isolated) errors.form = "This page is not cross-origin isolated, so the plotter cannot run.";
-  if (s.k > 26 && !caps.memory64) errors.form = "k28 needs WebAssembly memory64, which this browser lacks.";
-  return errors;
-}
 
-// The fields of a plot header the page needs, read from the start of the file.
-interface PlotFileInfo {
-  k: number;
-  strength: number;
-  index: number;
-  metaGroup: number;
-  memo: Uint8Array;
-  groupId: string;
-  farmerKey: string;
-  pool: string;
-}
-
-async function readPlotInfo(file: File): Promise<PlotFileInfo | null> {
-  const b = new Uint8Array(await file.slice(0, 43 + 255).arrayBuffer());
-  if (b.length < 43 || String.fromCharCode(...b.subarray(0, 4)) !== "pos2" || b[4] !== 1) return null;
-  const memo = b.slice(43, 43 + b[42]);
-  const info = { k: b[37], strength: b[38], index: b[39] | (b[40] << 8), metaGroup: b[41], memo };
-  try {
-    const m = inspect_memo(memo, info.strength, info.index, info.metaGroup, "xch");
-    const out = { ...info, groupId: m.plot_group_id_hex, farmerKey: m.farmer_public_key, pool: m.pool_contract_address || m.pool_public_key };
-    m.free();
-    return out;
-  } catch {
-    return null;
+  cancel() {
+    this.stopping = true;
+    // Stopping a paused plot needs it to wake up and see the cancel.
+    this.setPaused(false);
+    this.worker.postMessage({ type: "cancel" });
   }
-}
 
-// Lists .plot2 files under dir, including subfolders, with their relative paths.
-async function walkPlots(d: FileSystemDirectoryHandle, prefix = ""): Promise<{ file: File; path: string }[]> {
-  const out: { file: File; path: string }[] = [];
-  for await (const entry of (d as unknown as { values(): AsyncIterable<FileSystemHandle> }).values()) {
-    if (entry.kind === "directory") {
-      out.push(...(await walkPlots(entry as FileSystemDirectoryHandle, `${prefix}${entry.name}/`)));
-    } else if (entry.name.endsWith(".plot2")) {
-      out.push({ file: await (entry as FileSystemFileHandle).getFile(), path: prefix + entry.name });
-    }
+  // WASM memory never shrinks, so drop the worker (and its multi GB heap) when idle.
+  reset() {
+    this.worker.terminate();
+    this.worker = Plotter.makeWorker();
+    this.stats.plotterHeapBytes = 0;
+    this.paused = false;
+    this.stopping = false;
   }
-  return out;
-}
-
-// An existing group to add plots to: its keys (from a plot memo) and the indexes in use.
-interface ContinueGroup {
-  memo: Uint8Array;
-  strength: number;
-  metaGroup: number;
-  groupId: string;
-  farmerKey: string;
-  pool: string;
-  used: Set<number>;
-  plots: number;
-}
-
-// A drive in the hard drive layout: one plot key, plots spread over meta groups.
-interface DriveKey {
-  memo: Uint8Array;
-  strength: number;
-  groupId: string;
-  farmerKey: string;
-  pool: string;
-  // Per meta group: how many plots and the highest plot index seen.
-  metas: Map<number, { count: number; maxIndex: number }>;
-  plots: number;
-}
-
-// A short label for a session in the Recent sessions list.
-function summarize(s: Settings): string {
-  const mode: Record<Settings["groupKeys"], string> = {
-    none: "no groups",
-    drive: s.driveStart === "continue" ? "hard drive (continue)" : "hard drive",
-    separate: "independent groups",
-    shared: "staggered groups",
-    continue: "add to group",
-  };
-  const farmer = s.farmerKey ? `farmer ${s.farmerKey.slice(0, 8)}…` : "no farmer key";
-  const plots = s.count === 0 ? "until stopped" : `${s.count} plot${s.count === 1 ? "" : "s"}`;
-  return `k${s.k} · strength ${s.strength} · ${mode[s.groupKeys]} · ${plots} · ${farmer}`;
-}
-
-function fmtAgo(t: number): string {
-  const m = Math.round((Date.now() - t) / 60000);
-  if (m < 1) return "just now";
-  if (m < 60) return `${m} min ago`;
-  const h = Math.round(m / 60);
-  if (h < 24) return `${h} h ago`;
-  return new Date(t).toLocaleDateString();
-}
-
-function fmtBytes(n: number) {
-  if (n >= 1e9) return `${(n / 1e9).toFixed(2)} GB`;
-  if (n >= 1e6) return `${(n / 1e6).toFixed(1)} MB`;
-  return `${(n / 1e3).toFixed(0)} kB`;
-}
-
-function fmtMs(ms: number) {
-  const s = ms / 1000;
-  if (s < 60) return `${s.toFixed(1)} s`;
-  return `${Math.floor(s / 60)}m ${Math.round(s % 60)}s`;
 }
 
 export async function start() {
   await initKeys();
   const caps = capabilities();
   renderEnv(caps);
+  wireFileButtons();
 
   const form = $<HTMLFormElement>("#config");
   const startBtn = $<HTMLButtonElement>("#start");
   const stopBtn = $<HTMLButtonElement>("#stop");
   const pauseBtn = $<HTMLButtonElement>("#pause");
-  // Pause state for the current run. Paused time is left out of elapsed time and the ETA.
-  let paused = false;
-  let pausedSince = 0;
-  let pausedTotal = 0;
   const pickBtn = $<HTMLButtonElement>("#pick-dir");
   const statusCard = $<HTMLElement>("#status");
   const statusText = $<HTMLElement>("#status-text");
   const barFill = $<HTMLElement>("#bar-fill");
   const bar = $<HTMLElement>("#bar");
   const formError = $<HTMLElement>("#form-error");
-  const history = $<HTMLTableSectionElement>("#history tbody");
 
   applySettings(form, { threads: caps.threads, output: "download" });
-  // Older sessions stored gpu as a boolean. Anything unknown becomes the default.
-  const applySaved = (saved: Record<string, unknown>) =>
-    applySettings(form, { ...saved, gpu: saved.gpu === false ? "off" : saved.gpu === "hybrid" ? "hybrid" : saved.gpu === "off" ? "off" : "gpu" });
   // Settings used to be shared by all tabs under this key. Sessions replace it.
   localStorage.removeItem("pos2-plotter-settings");
   const session = await startSession();
-  if (session.settings) applySaved(session.settings);
+  if (session.settings) restoreSettings(form, session.settings);
   if (!caps.dirPicker) {
-    form.querySelector<HTMLInputElement>('[name="output"][value="dir"]')!.disabled = true;
+    $<HTMLInputElement>('[name="output"][value="dir"]', form).disabled = true;
     applySettings(form, { output: "download" });
   }
-  // Folder controls only matter when saving into a folder.
-  const dirPanel = $<HTMLElement>("#dir-panel");
-  const groupFoldersNote = $<HTMLElement>("#group-folders-note");
-  const syncOutput = () => {
+
+  // Which controls apply: folder controls only when saving into a folder, pool fields for
+  // the pool mode, and the panels of the chosen plot group option.
+  const syncVisibility = () => {
     const s = readSettings(form);
-    dirPanel.hidden = !caps.dirPicker || s.output !== "dir";
+    $<HTMLElement>("#dir-panel").hidden = !caps.dirPicker || s.output !== "dir";
     // Always shown so plot groups are easy to discover, but only used with groups.
-    groupFoldersNote.textContent = s.groupKeys === "none" ? "Used with plot groups, see Plot groups above. Without groups every plot has its own key, so plots stay in the chosen folder." : "";
-  };
-  syncOutput();
-  form.addEventListener("change", syncOutput);
-
-  // Drive size estimates in the settings and the plot groups explainer. Every number there
-  // follows the Drive size field.
-  const syncDriveText = () => {
-    const s = readSettings(form);
-    const n = drivePlotsOf(s);
-    const tb = fmtTB(s.driveTB);
-    const set = (cls: string, text: string) => form.querySelectorAll(`.${cls}`).forEach((el) => (el.textContent = text));
-    set("js-drive-fits", `A ${tb} drive holds about ${n.toLocaleString()} k28 plots.`);
-    set("js-drive-tb", tb);
-    set("js-drive-plots", n.toLocaleString());
-    const ungrouped = n / 512;
-    set("js-drive-ungrouped", ungrouped >= 1
-      ? `about ${ungrouped.toFixed(ungrouped < 10 ? 1 : 0)} of them pass at every signage point`
-      : `one of them passes about every ${Math.round(9.375 / ungrouped)} seconds`);
-    const reads = n * 4;
-    const secs = reads / 150;
-    set("js-drive-one-group", `A whole ${tb} drive as one group (about ${n.toLocaleString()} plots, ${reads.toLocaleString()} reads at once) ` +
-      (secs > 8 ? `is too much, about ${Math.round(secs)} seconds of reads.` : `takes about ${Math.max(1, Math.round(secs))} seconds of reads, which one drive can manage.`));
-    set("js-drive-per-meta", Math.ceil(n / 16).toLocaleString());
-    // About 250 plots per meta group is near what one drive serves in a signage point.
-    const metas = Math.min(256, 16 * Math.max(1, Math.ceil(n / 4000)));
-    const blocks = metas / 16;
-    set("js-drive-metas", `${metas} meta groups`);
-    set("js-drive-wakes", blocks === 1 ? "once a day for one window" : `${blocks} times a day, one window each`);
-    set("js-drive-per-meta-rec", Math.ceil(n / metas).toLocaleString());
-    set("js-drive-sps", String(metas));
-  };
-  form.addEventListener("input", syncDriveText);
-  form.addEventListener("change", syncDriveText);
-  syncDriveText();
-
-  // Expected filter passes for the chosen strength, from today's consensus constants:
-  // 64 signage points per 600 s sub slot, filter bits min(9 + strength - 2, 13).
-  const readRate = $<HTMLElement>("#read-rate");
-  const syncReadRate = () => {
-    const s = readSettings(form);
-    if (!(s.strength >= 2 && s.strength <= 17)) {
-      readRate.textContent = "";
-      return;
-    }
-    const bits = Math.min(9 + s.strength - 2, 13);
-    const perDay = 9216 / 2 ** bits;
-    const every = (24 * 60) / perDay;
-    const everyText = every >= 60 ? `${(every / 60).toFixed(1)} hours` : `${Math.round(every)} minutes`;
-    const drivePlots = drivePlotsOf(s);
-    const perSp = drivePlots / 2 ** bits;
-    const capped = s.strength > 6 ? " Above strength 6 the filter is capped today, so this is the same as strength 6." : "";
-    const drive =
-      perSp >= 1
-        ? `about ${perSp.toFixed(perSp < 10 ? 1 : 0)} of them to read at every signage point (every 9.4 s)`
-        : `one of them to read about every ${Math.round(9.375 / perSp)} s`;
-    readRate.textContent =
-      `Strength ${s.strength} plots will wake about every ${everyText}, about ${perDay.toFixed(perDay < 10 ? 1 : 0)} times a day ` +
-      `(it passes 1 in ${(2 ** bits).toLocaleString()} signage points). A group wakes on the same schedule as one plot. ` +
-      `A ${fmtTB(s.driveTB)} drive of ${drivePlots.toLocaleString()} ungrouped k28 plots has ${drive}.${capped}`;
-  };
-
-  // When grouping, how often each group (and so its drive) gets read. Uses the existing
-  // group's strength when adding to a group.
-  const groupRate = $<HTMLElement>("#group-rate");
-  let groupStrength: () => number | null = () => null;
-  const fmtInterval = (minutes: number) =>
-    minutes >= 60 ? `${(minutes / 60).toFixed(1)} hours` : `${Math.round(minutes)} minutes`;
-  const syncGroupRate = () => {
-    const s = readSettings(form);
-    const strength = s.groupKeys === "continue" ? groupStrength() : s.strength;
-    if (s.groupKeys === "none" || strength === null || !(strength >= 2 && strength <= 17)) {
-      groupRate.textContent = "";
-      groupRate.classList.remove("low");
-      return;
-    }
-    const passesPerDay = (st: number) => 9216 / 2 ** Math.min(9 + st - 2, 13);
-    const perDay = passesPerDay(strength);
-    const every = fmtInterval((24 * 60) / perDay);
-    const low = strength <= 3;
-    groupRate.classList.toggle("low", low);
-    groupRate.textContent =
-      `At strength ${strength}, each group will be read about every ${every} (about ${perDay.toFixed(perDay < 10 ? 1 : 0)} times a day), ` +
-      `so a drive holding one group can sleep between reads if its spin-down timer is shorter than that.` +
-      (low
-        ? ` That is still about ${Math.round(perDay)} spin-ups a day. If fewer spin-ups matter, use strength 4 to 6: ` +
-          `strength 4 is about every ${fmtInterval((24 * 60) / passesPerDay(4))}, strength 6 about every ${fmtInterval((24 * 60) / passesPerDay(6))}, ` +
-          `with slower plotting and proving.`
-        : "") +
-      (s.groupKeys === "continue" ? " Strength comes from the existing group." : "");
-  };
-
-  // File size, peak plotter memory and plotting time at strength 2, measured in Chrome on an
-  // M4 Pro (14 cores, 20 core GPU), with the GPU and CPU only. Shown under the size field.
-  const kInfo: Record<number, { file: string; memory: string; gpu: string; cpu: string }> = {
-    28: { file: "about 1 GB", memory: "about 11 GB", gpu: "about 40 seconds", cpu: "2 minutes" },
-    26: { file: "about 230 MB", memory: "about 3 GB", gpu: "about 5 seconds", cpu: "30 seconds" },
-    24: { file: "about 53 MB", memory: "about 0.7 GB", gpu: "about 2 seconds", cpu: "7 seconds" },
-    22: { file: "about 12 MB", memory: "about 0.3 GB", gpu: "under a second", cpu: "2 seconds" },
-    20: { file: "about 3 MB", memory: "under 0.1 GB", gpu: "under a second", cpu: "under a second" },
-    18: { file: "about 0.6 MB", memory: "under 0.1 GB", gpu: "under a second", cpu: "under a second" },
-  };
-  const kDetails = $<HTMLElement>("#k-details");
-  const syncK = () => {
-    const k = readSettings(form).k;
-    const i = kInfo[k];
-    kDetails.textContent = i
-      ? `Each k${k} plot is ${i.file} on disk, needs ${i.memory} of memory while plotting, and takes ${i.gpu} at strength 2 on a fast laptop with the GPU (${i.cpu} on the CPU only).` +
-        (k >= 28 && !caps.memory64 ? " This browser lacks WebAssembly memory64, which k28 needs." : "")
+    $<HTMLElement>("#group-folders-note").textContent = s.groupKeys === "none"
+      ? "Used with plot groups, see Plot groups above. Without groups every plot has its own key, so plots stay in the chosen folder."
       : "";
-  };
-  syncK();
-  form.addEventListener("change", syncK);
-
-  const syncPoolMode = () => {
-    const mode = readSettings(form).poolMode;
-    form.querySelectorAll<HTMLElement>("[data-mode]").forEach((el) => {
-      el.hidden = el.dataset.mode !== mode;
+    form.querySelectorAll<HTMLElement>("[data-mode]").forEach((el) => (el.hidden = el.dataset.mode !== s.poolMode));
+    form.querySelectorAll<HTMLElement>("[data-group-modes]").forEach((el) => {
+      el.hidden = !(el.dataset.groupModes ?? "").split(" ").includes(s.groupKeys);
     });
+    $<HTMLElement>("#continue-panel").hidden = s.groupKeys !== "continue";
+    $<HTMLElement>("#drive-continue").hidden = s.driveStart !== "continue";
   };
-  syncPoolMode();
-  syncReadRate();
-  form.addEventListener("input", syncReadRate);
-  form.addEventListener("input", syncGroupRate);
-  form.addEventListener("change", syncGroupRate);
-  form.addEventListener("change", syncPoolMode);
+  syncVisibility();
+  form.addEventListener("change", syncVisibility);
+
+  // Existing plots to continue from: a group to add to, or a drive to keep filling.
+  let cont: ContinueGroup | null = null;
+  let drive: DriveKey | null = null;
+  const estimates = setupEstimates(form, caps, {
+    groupStrength: () => cont?.strength ?? null,
+    driveStrength: () => drive?.strength ?? null,
+  });
+  const contStart = $<HTMLInputElement>("#cont-start");
+  setupPlotSource({
+    ids: { dir: "cont-dir", file: "cont-file", info: "cont-info", pick: "cont-pick", pickLabel: "cont-pick-label" },
+    collect: collectGroups,
+    label: (g) => `${g.groupId.slice(0, 16)}… meta ${g.metaGroup}, ${g.plots} plots`,
+    describe: (g) =>
+      `Group ${g.groupId.slice(0, 16)}…, meta group ${g.metaGroup}, strength ${g.strength}, ` +
+      `${g.plots} plot${g.plots === 1 ? "" : "s"} found, indexes in use: ${[...g.used].sort((a, b) => a - b).join(", ") || "none"}. ` +
+      describeKeys(g),
+    emptyText: "No group chosen yet.",
+    onChange: (g) => {
+      cont = g;
+      // Start after the highest index seen. Gaps are left alone, since plots with those
+      // indexes may exist elsewhere.
+      if (g) contStart.value = String(g.used.size ? Math.max(...g.used) + 1 : 0);
+      estimates.refresh();
+    },
+  });
+  setupPlotSource({
+    ids: { dir: "drive-dir", file: "drive-file", info: "drive-info", pick: "drive-pick", pickLabel: "drive-pick-label" },
+    collect: collectDrives,
+    label: (d) => `${d.groupId.slice(0, 16)}…, ${d.plots} plots`,
+    describe: (d) => {
+      const used = [...d.metas.entries()].sort((a, b) => a[0] - b[0]).map(([m, v]) => `${m}:${v.count}`).join(" ");
+      return `Plot key ${d.groupId.slice(0, 16)}…, strength ${d.strength}, ${d.plots} plots found. ` +
+        `Plots per meta group: ${used || "none"}. ${describeKeys(d)}`;
+    },
+    emptyText: "No drive chosen yet.",
+    onChange: (d) => {
+      drive = d;
+      estimates.refresh();
+    },
+  });
 
   // Keep this tab's session up to date, and offer other sessions to load.
   const sessionPick = $<HTMLSelectElement>("#session-pick");
   let saveTimer = 0;
-  const saveNow = () => saveSession(session.id, readSettings(form) as unknown as Record<string, unknown>, summarize(readSettings(form)));
+  const saveNow = () => {
+    const s = readSettings(form);
+    saveSession(session.id, s as unknown as Record<string, unknown>, summarize(s));
+  };
   const saveSoon = () => {
     clearTimeout(saveTimer);
     saveTimer = window.setTimeout(saveNow, 300);
@@ -415,8 +229,7 @@ export async function start() {
     const keep = sessionPick.options[0];
     sessionPick.replaceChildren(keep);
     for (const rec of listSessions()) {
-      if (rec.id === session.id) continue;
-      sessionPick.add(new Option(`${rec.summary} · ${fmtAgo(rec.updated)}`, rec.id));
+      if (rec.id !== session.id) sessionPick.add(new Option(`${rec.summary} · ${fmtAgo(rec.updated)}`, rec.id));
     }
     // Hidden until another tab or an earlier session has saved settings.
     $<HTMLElement>("#sessions").hidden = sessionPick.options.length < 2;
@@ -433,359 +246,155 @@ export async function start() {
   };
   showDir();
   sessionPick.addEventListener("change", async () => {
-    const id = sessionPick.value;
+    const rec = listSessions().find((r) => r.id === sessionPick.value);
     sessionPick.value = "";
-    const rec = listSessions().find((r) => r.id === id);
     if (!rec) return;
-    applySaved(rec.settings);
+    restoreSettings(form, rec.settings);
     // Rerun everything that reacts to the form, then save this tab's copy.
     form.dispatchEvent(new Event("change"));
     form.dispatchEvent(new Event("input"));
-    if (caps.dirPicker) {
-      const other = await loadDir(id);
-      if (other) {
-        dir = other;
-        await saveDir(session.id, other);
-        showDir();
-      }
+    const other = caps.dirPicker ? await loadDir(rec.id) : null;
+    if (other) {
+      dir = other;
+      await saveDir(session.id, other);
+      showDir();
     }
     saveNow();
     statusCard.hidden = false;
     statusText.textContent = `Loaded settings from: ${rec.summary}`;
   });
   pickBtn.addEventListener("click", async () => {
-    try {
-      dir = await (window as unknown as { showDirectoryPicker(o: object): Promise<FileSystemDirectoryHandle> })
-        .showDirectoryPicker({ id: "plots", mode: "readwrite", startIn: dir ?? "documents" });
-      await saveDir(session.id, dir);
-      showDir();
-      formError.textContent = "";
-      applySettings(form, { output: "dir" });
-    } catch {
-      // User closed the picker, or picked a folder Chrome refuses and then cancelled.
-    }
+    const picked = await pickDirectory("readwrite", dir ?? "documents");
+    if (!picked) return;
+    dir = picked;
+    await saveDir(session.id, dir);
+    showDir();
+    formError.textContent = "";
+    applySettings(form, { output: "dir" });
   });
 
-  const makeWorker = () => new Worker(new URL("./plotter.worker.ts", import.meta.url), { type: "module" });
-  let worker = makeWorker();
-  const statsSource: PlotStatsSource = { plotterHeapBytes: 0, peakHeapBytes: 0, finished: [], gpuHashes: 0, gpuMs: 0, lastGpuNote: "", lastUsedGpu: null };
+  const statsSource: PlotStatsSource = { plotterHeapBytes: 0, peakHeapBytes: 0, finished: [], gpuPlots: 0, gpuMs: 0, lastGpuNote: "", lastUsedGpu: null };
   startStats($<HTMLElement>("#stats"), statsSource);
+  const plotter = new Plotter({ text: statusText, barFill }, statsSource);
   const validator = new Validator();
+  const history = new History();
+  const storage = caps.opfs ? await claimPlotStorage(session.id) : null;
   let running = false;
-  let stopAfterCurrent = false;
-  let wakeLock: { release(): Promise<void> } | null = null;
-  // Plots kept in the origin private file system for download. Older ones are removed
-  // once a newer plot finishes, by which time their download has long completed.
-  const opfsFiles: { name: string; link: HTMLAnchorElement; checked: Promise<unknown> }[] = [];
 
   window.addEventListener("beforeunload", (e) => {
     if (running) e.preventDefault();
   });
 
-  const runOne = (job: PlotJob) =>
-    new Promise<{ ok: true; bytes: number; timings: Timings; file?: File } | { ok: false; reason: string }>((resolve) => {
-      const started = performance.now();
-      pausedTotal = 0;
-      // A crash (for example running out of memory) leaves the WASM module unusable, so
-      // replace the worker before the next plot.
-      worker.onerror = (e) => {
-        e.preventDefault();
-        worker.terminate();
-        worker = makeWorker();
-        resolve({ ok: false, reason: `plotter crashed: ${e.message || "unknown error"}` });
-      };
-      worker.onmessage = (ev: MessageEvent<FromWorker>) => {
-        const m = ev.data;
-        if (m.type === "progress") {
-          if (m.heapBytes) {
-            statsSource.plotterHeapBytes = m.heapBytes;
-            statsSource.peakHeapBytes = Math.max(statsSource.peakHeapBytes, m.heapBytes);
-          }
-          // Once Stop is pressed the status stays on "Stopping…" until the run ends, and while
-          // paused it stays on "Paused".
-          if (stopAfterCurrent || paused) return;
-          const elapsed = performance.now() - started - pausedTotal;
-          const pct = (m.fraction * 100).toFixed(1);
-          const eta = m.phase === "plotting" && m.fraction > 0.05 ? `, about ${fmtMs(elapsed / m.fraction - elapsed)} left` : "";
-          barFill.style.width = `${100 * m.fraction}%`;
-          statusText.textContent = `${job.filename}: ${m.phase === "writing" ? "writing" : pct + "%"} (${m.detail}), ${fmtMs(elapsed)} elapsed${eta}`;
-        } else if (m.type === "done") {
-          resolve({ ok: true, bytes: m.bytes, timings: m.timings, file: m.file });
-        } else if (m.type === "cancelled") {
-          resolve({ ok: false, reason: "cancelled" });
-        } else if (m.type === "error") {
-          resolve({ ok: false, reason: m.message });
+  // Where plots go: the chosen folder, or browser storage for download. Null, with the
+  // reason shown, if neither is possible right now.
+  const resolveSink = async (s: ReturnType<typeof readSettings>): Promise<Sink | null> => {
+    if (s.output === "dir") {
+      if (!dir) {
+        pickBtn.click();
+        formError.textContent = "Choose a folder, then press Start again.";
+        return null;
+      }
+      const perm = await (dir as unknown as { requestPermission(o: object): Promise<string> }).requestPermission({ mode: "readwrite" });
+      if (perm !== "granted") {
+        formError.textContent = "Folder permission was not granted.";
+        return null;
+      }
+      return { kind: "dir", dir };
+    }
+    if (!storage) {
+      formError.textContent = "This browser has no storage for downloads.";
+      return null;
+    }
+    const { quota = 0, usage = 0 } = await navigator.storage.estimate();
+    if (quota - usage < (K_SIZES[s.k]?.bytes ?? 1e9) * 2) {
+      formError.textContent = `Browser storage has ${fmtBytes(quota - usage)} free, which is not enough for this plot.`;
+      return null;
+    }
+    return { kind: "opfs", folder: storage.folder };
+  };
+
+  const plotAll = async (s: ReturnType<typeof readSettings>, sink: Sink) => {
+    const expectFarmerKey =
+      (s.groupKeys === "continue" ? cont?.farmerKey : undefined) ??
+      (s.groupKeys === "drive" && s.driveStart === "continue" ? drive?.farmerKey : undefined) ??
+      s.farmerKey;
+    const plan = planPlots(s, { group: cont, drive, firstIndex: Number(contStart.value) || 0 });
+    try {
+      for (let next = plan.next(); ; next = plan.next()) {
+        if (next.done) {
+          if (next.value) statusText.textContent = next.value;
+          return;
         }
-      };
-      worker.postMessage({ type: "plot", job });
-    });
-
-  interface GroupInfo { strength: number; groupId: string; index: number; size: number; metaGroup: number }
-  const historyEmpty = $<HTMLElement>("#history-empty");
-  const historyWrap = $<HTMLElement>("#history-wrap");
-  const historySummary = $<HTMLElement>("#history-summary");
-  let historyCount = 0;
-  let historyBytes = 0;
-  const addHistory = (filename: string, bytes: number, t: Timings, group: GroupInfo, file?: File) => {
-    let link: HTMLAnchorElement | null = null;
-    historyCount++;
-    historyBytes += bytes;
-    historyEmpty.hidden = true;
-    historyWrap.hidden = false;
-    historySummary.textContent = `${historyCount} plot${historyCount === 1 ? "" : "s"} · ${fmtBytes(historyBytes)}`;
-
-    const tr = document.createElement("tr");
-    tr.innerHTML =
-      `<td class="file"><div class="name"></div><div class="mt-1 text-xs text-muted where"></div></td>` +
-      `<td class="group"></td><td class="num"></td>` +
-      `<td class="num"><div class="total"></div><div class="text-xs text-muted split"></div></td>` +
-      `<td class="gpu"></td><td class="check"><span class="pill pill-muted">not checked</span></td>`;
-    // Plot IDs are long, so show the start and end and keep the full name on hover.
-    const name = tr.querySelector<HTMLElement>(".name")!;
-    const m = filename.match(/^(plot-k\d+-)([0-9a-f]{64})(\.plot2)$/);
-    name.textContent = m ? `${m[1]}${m[2].slice(0, 8)}…${m[2].slice(-4)}${m[3]}` : filename;
-    name.title = filename;
-    tr.cells[2].textContent = fmtBytes(bytes);
-    tr.querySelector(".total")!.textContent = fmtMs(t.totalMs);
-    tr.querySelector(".split")!.textContent = `plot ${fmtMs(t.plotMs)} · write ${fmtMs(t.writeMs)}`;
-
-    const groupCell = tr.querySelector<HTMLElement>(".group")!;
-    const ofSize = group.size ? `/${group.size}` : "";
-    groupCell.textContent = `s${group.strength} ${group.groupId.slice(0, 8)} #${group.index + 1}${ofSize} m${group.metaGroup}`;
-    groupCell.title = `Strength ${group.strength}\nPlot group ID ${group.groupId}\nPlot index ${group.index}${group.size ? ` (plot ${group.index + 1} of ${group.size} in this batch)` : ", added to an existing group"}\nMeta group ${group.metaGroup}`;
-    const phaseNames = ["hash", "sort", "pairs", "post sort", "misc"];
-    tr.cells[3].title = ["Xs", "T1", "T2", "T3"]
-      .map((n, i) => `${n} ${fmtMs(t.tablesMs[i])}: ` + t.phasesMs[i].map((ms, p) => (ms ? `${phaseNames[p]} ${fmtMs(ms)}` : "")).filter(Boolean).join(", "))
-      .join("\n");
-    const gpuCell = tr.querySelector<HTMLElement>(".gpu")!;
-    gpuCell.innerHTML = t.gpuMs > 0 ? `<span class="pill pill-ok">GPU</span>` : `<span class="pill pill-muted">CPU</span>`;
-    gpuCell.title = t.gpuMs > 0 ? `g(x) on ${t.gpuNote}, ${fmtMs(t.gpuMs)}` : t.gpuNote || "CPU";
-
-    const where = tr.querySelector<HTMLElement>(".where")!;
-    if (file) {
-      const a = document.createElement("a");
-      a.href = URL.createObjectURL(file);
-      a.download = filename;
-      a.textContent = "Download";
-      where.append(a);
-      a.click();
-      link = a;
-    } else {
-      where.textContent = "Saved to folder";
+        if (plotter.stopping) return;
+        const { derived, group } = next.value;
+        const filename = `plot-k${s.k}-${derived.plot_id_hex}.plot2`;
+        let plotSink = sink;
+        if (sink.kind === "dir" && s.groupFolders && s.groupKeys !== "none") {
+          // One folder per plot key (group ID). Meta groups of the same key share it, so a hard
+          // drive layout's 16 meta groups, or staggered groups, stay together.
+          plotSink = { kind: "dir", dir: await sink.dir.getDirectoryHandle(`group-${group.groupId.slice(0, 16)}`, { create: true }) };
+        }
+        const job: PlotJob = {
+          k: s.k, strength: group.strength, plotIndex: group.index, metaGroup: group.metaGroup,
+          plotId: derived.plot_id, memo: derived.memo, testnet: s.network === "testnet", threads: s.threads, gpu: s.gpu,
+          filename, sink: plotSink,
+        };
+        derived.free();
+        const res = await plotter.run(job);
+        if (!res.ok) {
+          statusText.textContent = res.reason === "cancelled" ? "Stopped." : `Error: ${res.reason}`;
+          // A stopped or failed plot has no progress left to show.
+          bar.hidden = true;
+          return;
+        }
+        statsSource.finished.push({ bytes: res.bytes, ms: res.timings.totalMs });
+        statsSource.lastUsedGpu = res.timings.gpuMs > 0;
+        statsSource.lastGpuNote = res.timings.gpuNote;
+        if (res.timings.gpuMs > 0) {
+          statsSource.gpuPlots++;
+          statsSource.gpuMs += res.timings.gpuMs;
+        }
+        const row = history.add(filename, res.bytes, res.timings, group, res.file);
+        let checked: Promise<unknown> = Promise.resolve();
+        if (s.autoChecks > 0) {
+          // Read the plot back from where it was saved, so the check also covers the write.
+          const file = res.file ?? (plotSink.kind === "dir" ? await (await plotSink.dir.getFileHandle(filename)).getFile() : undefined);
+          if (file) {
+            row.setCheck(`<span class="pill pill-muted">queued</span>`);
+            checked = validator
+              .check(file, { challenges: s.autoChecks, network: s.network, expectFarmerKey, gpu: s.gpu !== "off" }, (p) => {
+                row.setCheck(`<span class="pill pill-muted">checking ${p.done}/${p.total}</span>`);
+              })
+              .then(row.showReport);
+          }
+        }
+        if (storage && row.link) await storage.keep(filename, row.link, checked);
+        statusText.textContent = `Finished ${filename}`;
+        barFill.style.width = "100%";
+      }
+    } finally {
+      // Wipes the plan's seeds if it stopped early.
+      plan.return(undefined);
     }
-    history.prepend(tr);
-    return { link, checkCell: tr.querySelector<HTMLElement>(".check")! };
   };
-
-  // Hard drive layout: an existing drive's key and meta group usage, when continuing.
-  let drive: DriveKey | null = null;
-  const driveInfo = $<HTMLElement>("#drive-info");
-  const drivePick = $<HTMLSelectElement>("#drive-pick");
-  const driveRate = $<HTMLElement>("#drive-rate");
-  const syncDrive = () => {
-    const s = readSettings(form);
-    $<HTMLElement>("#drive-continue").hidden = s.driveStart !== "continue";
-    const strength = s.driveStart === "continue" && drive ? drive.strength : s.strength;
-    const metas = Math.max(1, Math.min(256, s.driveMetas || 16));
-    const blocks = Math.ceil(metas / 16);
-    const bits = Math.min(9 + strength - 2, 13);
-    // Each block of 16 meta groups passes in the same windows; different blocks never share one.
-    const wakesPerDay = (9216 / 2 ** bits) * blocks;
-    const every = (24 * 60) / wakesPerDay;
-    const everyText = every >= 60 ? `${(every / 60).toFixed(1)} hours` : `${Math.round(every)} minutes`;
-    const perSp = Math.ceil(drivePlotsOf(s) / metas);
-    const secs = (perSp * 4) / 150;
-    driveRate.classList.toggle("low", strength <= 3 || perSp > 300);
-    driveRate.textContent =
-      `At strength ${strength}, the drive wakes about every ${everyText} (${wakesPerDay.toFixed(wakesPerDay < 10 ? 1 : 0)} times a day) ` +
-      `for ${blocks === 1 ? "one window" : `${blocks} windows`} of about 2.5 minutes, serving about ${perSp} plots at each signage point ` +
-      `(about ${perSp * 4} random reads, roughly ${secs.toFixed(0)} s on a typical hard drive).` +
-      (perSp > 300 ? " That is a lot for one signage point, consider more meta groups." : "") +
-      (strength <= 3 ? " Strength 4 to 6 means far fewer wakeups." : "") +
-      (s.driveStart === "continue" && drive ? " Strength comes from the drive's existing plots." : "");
-  };
-  form.addEventListener("input", syncDrive);
-  form.addEventListener("change", syncDrive);
-  syncDrive();
-  const showDrive = () => {
-    if (!drive) {
-      driveInfo.textContent = "No drive chosen yet.";
-      return;
-    }
-    const used = [...drive.metas.entries()].sort((a, b) => a[0] - b[0]).map(([m, v]) => `${m}:${v.count}`).join(" ");
-    driveInfo.textContent =
-      `Plot key ${drive.groupId.slice(0, 16)}…, strength ${drive.strength}, ${drive.plots} plots found. ` +
-      `Plots per meta group: ${used || "none"}. Farmer ${drive.farmerKey.slice(0, 12)}…, pool ${drive.pool.slice(0, 16)}…`;
-  };
-  showDrive();
-  const loadDrive = async (files: { file: File }[]) => {
-    const keys = new Map<string, DriveKey>();
-    for (const { file } of files) {
-      const info = await readPlotInfo(file);
-      if (!info) continue;
-      const d = keys.get(info.groupId) ?? {
-        memo: info.memo, strength: info.strength, groupId: info.groupId, farmerKey: info.farmerKey,
-        pool: info.pool, metas: new Map(), plots: 0,
-      };
-      const m = d.metas.get(info.metaGroup) ?? { count: 0, maxIndex: -1 };
-      m.count++;
-      m.maxIndex = Math.max(m.maxIndex, info.index);
-      d.metas.set(info.metaGroup, m);
-      d.plots++;
-      keys.set(info.groupId, d);
-    }
-    const list = [...keys.values()].sort((a, b) => b.plots - a.plots);
-    drivePick.innerHTML = "";
-    list.forEach((d, i) => drivePick.add(new Option(`${d.groupId.slice(0, 16)}…, ${d.plots} plots`, String(i))));
-    $<HTMLElement>("#drive-pick-label").hidden = list.length < 2;
-    drivePick.onchange = () => {
-      drive = list[Number(drivePick.value)] ?? null;
-      showDrive();
-      syncDrive();
-    };
-    drive = list[0] ?? null;
-    if (!drive) driveInfo.textContent = "No readable plots found there.";
-    else showDrive();
-    syncDrive();
-  };
-  if (!caps.dirPicker) $<HTMLElement>("#drive-dir").hidden = true;
-  $<HTMLButtonElement>("#drive-dir").addEventListener("click", async () => {
-    try {
-      const d = await (window as unknown as { showDirectoryPicker(o: object): Promise<FileSystemDirectoryHandle> })
-        .showDirectoryPicker({ id: "plots", mode: "read" });
-      driveInfo.textContent = "Reading plots…";
-      await loadDrive(await walkPlots(d));
-    } catch {
-      // Picker closed.
-    }
-  });
-  const driveFile = $<HTMLInputElement>("#drive-file");
-  driveFile.addEventListener("change", async () => {
-    await loadDrive(Array.from(driveFile.files ?? [], (file) => ({ file })));
-    driveFile.value = "";
-  });
-
-  let cont: ContinueGroup | null = null;
-  const contPanel = $<HTMLElement>("#continue-panel");
-  const contInfo = $<HTMLElement>("#cont-info");
-  const contStart = $<HTMLInputElement>("#cont-start");
-  const contPick = $<HTMLSelectElement>("#cont-pick");
-  const syncGroupMode = () => {
-    const mode = readSettings(form).groupKeys;
-    contPanel.hidden = mode !== "continue";
-    form.querySelectorAll<HTMLElement>("[data-group-modes]").forEach((el) => {
-      el.hidden = !el.dataset.groupModes!.split(" ").includes(mode);
-    });
-  };
-  syncGroupMode();
-  form.addEventListener("change", syncGroupMode);
-  if (!caps.dirPicker) $<HTMLElement>("#cont-dir").hidden = true;
-
-  const showCont = () => {
-    if (!cont) {
-      contInfo.textContent = "No group chosen yet.";
-      return;
-    }
-    // Start after the highest index seen. Gaps are left alone, since plots with those
-    // indexes may exist elsewhere.
-    contStart.value = String(cont.used.size ? Math.max(...cont.used) + 1 : 0);
-    contInfo.textContent =
-      `Group ${cont.groupId.slice(0, 16)}…, meta group ${cont.metaGroup}, strength ${cont.strength}, ` +
-      `${cont.plots} plot${cont.plots === 1 ? "" : "s"} found, indexes in use: ${[...cont.used].sort((a, b) => a - b).join(", ") || "none"}. ` +
-      `Farmer ${cont.farmerKey.slice(0, 12)}…, pool ${cont.pool.slice(0, 16)}…`;
-  };
-  showCont();
-  groupStrength = () => cont?.strength ?? null;
-  syncGroupRate();
-
-  // Groups are keyed by group ID and meta group: staggered groups share the ID.
-  const loadGroups = async (files: { file: File }[]) => {
-    const groups = new Map<string, ContinueGroup>();
-    for (const { file } of files) {
-      const info = await readPlotInfo(file);
-      if (!info) continue;
-      const key = `${info.groupId}:${info.metaGroup}`;
-      const g = groups.get(key) ?? {
-        memo: info.memo, strength: info.strength, metaGroup: info.metaGroup, groupId: info.groupId,
-        farmerKey: info.farmerKey, pool: info.pool, used: new Set<number>(), plots: 0,
-      };
-      g.used.add(info.index);
-      g.plots++;
-      groups.set(key, g);
-    }
-    const list = [...groups.values()].sort((a, b) => b.plots - a.plots);
-    contPick.innerHTML = "";
-    list.forEach((g, i) => contPick.add(new Option(`${g.groupId.slice(0, 16)}… meta ${g.metaGroup}, ${g.plots} plots`, String(i))));
-    $<HTMLElement>("#cont-pick-label").hidden = list.length < 2;
-    contPick.onchange = () => {
-      cont = list[Number(contPick.value)] ?? null;
-      showCont();
-      syncGroupRate();
-    };
-    cont = list[0] ?? null;
-    if (!cont) contInfo.textContent = "No readable plots found there.";
-    else showCont();
-    syncGroupRate();
-  };
-  $<HTMLButtonElement>("#cont-dir").addEventListener("click", async () => {
-    try {
-      const d = await (window as unknown as { showDirectoryPicker(o: object): Promise<FileSystemDirectoryHandle> })
-        .showDirectoryPicker({ id: "plots", mode: "read" });
-      contInfo.textContent = "Reading plots…";
-      await loadGroups(await walkPlots(d));
-    } catch {
-      // Picker closed.
-    }
-  });
-  const contFile = $<HTMLInputElement>("#cont-file");
-  contFile.addEventListener("change", async () => {
-    await loadGroups(Array.from(contFile.files ?? [], (file) => ({ file })));
-    contFile.value = "";
-  });
 
   form.addEventListener("submit", async (ev) => {
     ev.preventDefault();
     if (running) return;
     const s = readSettings(form);
     const driveContinue = s.groupKeys === "drive" && s.driveStart === "continue";
-    const continuing = s.groupKeys === "continue" || driveContinue;
-    const errors = validate(s, caps, continuing);
+    const errors = validateSettings(s, caps, s.groupKeys === "continue" || driveContinue);
     if (s.groupKeys === "continue" && !cont) errors.form = "Choose the group to add to, or pick another plot group option.";
     if (driveContinue && !drive) errors.form = "Choose the drive's plot folder or one of its plots, or pick Start a new drive.";
     form.querySelectorAll<HTMLElement>(".err[data-for]").forEach((el) => {
-      el.textContent = errors[el.dataset.for!] ?? "";
+      el.textContent = errors[el.dataset.for ?? ""] ?? "";
     });
     formError.textContent = errors.form ?? (Object.keys(errors).length ? "Fix the fields above." : "");
     if (Object.keys(errors).length) return;
-
-    let sink: Sink = { kind: "opfs" };
-    if (s.output === "dir") {
-      if (!dir) {
-        pickBtn.click();
-        formError.textContent = "Choose a folder, then press Start again.";
-        return;
-      }
-      const perm = await (dir as unknown as { requestPermission(o: object): Promise<string> })
-        .requestPermission({ mode: "readwrite" });
-      if (perm !== "granted") {
-        formError.textContent = "Folder permission was not granted.";
-        return;
-      }
-      sink = { kind: "dir", dir };
-    }
-
-    if (sink.kind === "opfs") {
-      const { quota = 0, usage = 0 } = await navigator.storage.estimate();
-      const need = { 18: 1e6, 20: 3e6, 22: 13e6, 24: 54e6, 26: 231e6, 28: 990e6 }[s.k] ?? 1e9;
-      if (quota - usage < need * 2) {
-        formError.textContent = `Browser storage has ${fmtBytes(quota - usage)} free, which is not enough for this plot.`;
-        return;
-      }
-    }
+    const sink = await resolveSink(s);
+    if (!sink) return;
 
     running = true;
-    stopAfterCurrent = false;
-    paused = false;
     startBtn.disabled = true;
     stopBtn.disabled = false;
     pauseBtn.disabled = false;
@@ -793,261 +402,36 @@ export async function start() {
     statusCard.hidden = false;
     bar.hidden = false;
     barFill.style.width = "0%";
-    wakeLock = await (navigator as unknown as { wakeLock?: { request(t: string): Promise<{ release(): Promise<void> }> } })
+    const wakeLock = await (navigator as unknown as { wakeLock?: { request(t: string): Promise<{ release(): Promise<void> }> } })
       .wakeLock?.request("screen").catch(() => null) ?? null;
-
-    // A plot group is plots with the same plot key (one seed) and meta group, with indexes
-    // 0..groupSize-1. Independent groups each get a new key. Staggered groups share a key
-    // and step the meta group by 16, so no two of them pass the filter in the same window;
-    // after 16 groups the meta groups would repeat, so a new key starts.
-    const groupsPerKey = s.groupKeys === "shared" ? 16 : 1;
-    // Without groups every plot is a group of one with meta group 0, like chia plots create2.
-    const groupSize = s.groupKeys === "none" ? 1 : s.groupSize;
-    const firstMeta = s.groupKeys === "none" ? 0 : s.metaGroup;
-    let seed = new Uint8Array(32);
-    const group0 = s.groupKeys === "continue" ? cont : null;
-    // Hard drive layout state: the drive's key and how full each meta group is.
-    const driveMode = s.groupKeys === "drive";
-    const driveMetas = Math.max(1, Math.min(256, s.driveMetas || 16));
-    const driveState: DriveKey | null = driveMode
-      ? driveContinue && drive
-        ? drive
-        : { memo: new Uint8Array(), strength: s.strength, groupId: "", farmerKey: s.farmerKey, pool: "", metas: new Map(), plots: 0 }
-      : null;
-    const driveSeed = driveMode && !driveContinue ? crypto.getRandomValues(new Uint8Array(32)) : null;
-    // When continuing, start every meta group above the highest index seen on the drive. If
-    // only some of the drive's plots were chosen, a meta group may have plots the page cannot
-    // see, and indexes are plentiful, so skipping ahead is the safe choice.
-    const driveIndexFloor = driveContinue && drive ? Math.max(-1, ...[...drive.metas.values()].map((m) => m.maxIndex)) : -1;
-    let nextIndex = Math.max(0, Number(contStart.value) || 0);
-    for (let i = 0; s.count === 0 || i < s.count; i++) {
-      if (stopAfterCurrent) break;
-      let plotIndex: number;
-      let metaGroup: number;
-      let strength = s.strength;
-      let d;
-      if (driveState) {
-        // Fill the emptiest meta group first, so groups stay even as the drive fills.
-        let best = 0;
-        for (let m = 1; m < driveMetas; m++) {
-          if ((driveState.metas.get(m)?.count ?? 0) < (driveState.metas.get(best)?.count ?? 0)) best = m;
-        }
-        const slot = driveState.metas.get(best) ?? { count: 0, maxIndex: -1 };
-        if (slot.maxIndex >= 65535) {
-          statusText.textContent = "This drive's meta groups have no free plot indexes left.";
-          break;
-        }
-        plotIndex = Math.max(slot.maxIndex, driveIndexFloor) + 1;
-        metaGroup = best;
-        strength = driveState.strength;
-        d = driveSeed
-          ? derive(driveSeed, s.farmerKey, s.poolMode === "pk" ? s.poolKey : "", s.poolMode === "contract" ? s.poolAddress : "", strength, plotIndex, metaGroup)
-          : derive_from_memo(driveState.memo, strength, plotIndex, metaGroup);
-        slot.count++;
-        slot.maxIndex = plotIndex;
-        driveState.metas.set(best, slot);
-        driveState.plots++;
-      } else if (group0) {
-        // Next index not already in the group.
-        while (group0.used.has(nextIndex)) nextIndex++;
-        if (nextIndex > 65535) {
-          statusText.textContent = "This group has no free plot indexes left.";
-          break;
-        }
-        plotIndex = nextIndex;
-        metaGroup = group0.metaGroup;
-        strength = group0.strength;
-        d = derive_from_memo(group0.memo, strength, plotIndex, metaGroup);
-        group0.used.add(plotIndex);
-        group0.plots++;
-      } else {
-        plotIndex = i % groupSize;
-        const groupInKey = Math.floor(i / groupSize) % groupsPerKey;
-        if (plotIndex === 0 && groupInKey === 0) {
-          seed.fill(0);
-          seed = crypto.getRandomValues(new Uint8Array(32));
-        }
-        metaGroup = (firstMeta + 16 * groupInKey) % 256;
-        d = derive(seed, s.farmerKey, s.poolMode === "pk" ? s.poolKey : "", s.poolMode === "contract" ? s.poolAddress : "", strength, plotIndex, metaGroup);
-      }
-      const filename = `plot-k${s.k}-${d.plot_id_hex}.plot2`;
-      const group = { strength, groupId: d.plot_group_id_hex, index: plotIndex, size: group0 || driveState ? 0 : groupSize, metaGroup };
-      let plotSink: Sink = sink;
-      if (sink.kind === "dir" && s.groupFolders && s.groupKeys !== "none") {
-        // One folder per plot key (group ID). Meta groups of the same key share it, so a hard
-        // drive layout's 16 meta groups, or staggered groups, stay together.
-        plotSink = { kind: "dir", dir: await sink.dir.getDirectoryHandle(`group-${d.plot_group_id_hex.slice(0, 16)}`, { create: true }) };
-      }
-      const job: PlotJob = {
-        k: s.k, strength, plotIndex, metaGroup, plotId: d.plot_id, memo: d.memo,
-        testnet: s.network === "testnet", threads: s.threads, gpu: s.gpu, filename, sink: plotSink,
-      };
-      d.free();
-      const res = await runOne(job);
-      if (!res.ok) {
-        statusText.textContent = res.reason === "cancelled" ? "Stopped." : `Error: ${res.reason}`;
-        // A stopped or failed plot has no progress left to show.
-        bar.hidden = true;
-        break;
-      }
-      statsSource.finished.push({ bytes: res.bytes, ms: res.timings.totalMs });
-      // The plotter's GPU work is the Xs pass: g(x) for all 2^k values of x.
-      statsSource.lastUsedGpu = res.timings.gpuMs > 0;
-      statsSource.lastGpuNote = res.timings.gpuNote;
-      if (res.timings.gpuMs > 0) {
-        statsSource.gpuHashes += 2 ** s.k;
-        statsSource.gpuMs += res.timings.gpuMs;
-      }
-      const { link, checkCell } = addHistory(filename, res.bytes, res.timings, group, res.file);
-      let checked: Promise<unknown> = Promise.resolve();
-      if (s.autoChecks > 0) {
-        // Read the plot back from where it was saved, so the check also covers the write.
-        const file = res.file ?? (plotSink.kind === "dir" ? await plotSink.dir.getFileHandle(filename).then((h) => h.getFile()) : undefined);
-        if (file) {
-          checkCell.innerHTML = `<span class="pill pill-muted">queued</span>`;
-          checked = validator
-            .check(file, { challenges: s.autoChecks, network: s.network, expectFarmerKey: group0?.farmerKey ?? (driveContinue ? drive?.farmerKey : undefined) ?? s.farmerKey, gpu: s.gpu !== "off" }, (p) => {
-              checkCell.innerHTML = `<span class="pill pill-muted">checking ${p.done}/${p.total}</span>`;
-            })
-            .then((r) => renderCheckCell(checkCell, r));
-        }
-      }
-      if (sink.kind === "opfs" && link) {
-        const root = await navigator.storage.getDirectory();
-        for (const old of opfsFiles.splice(0)) {
-          await old.checked;
-          await root.removeEntry(old.name).catch(() => {});
-          URL.revokeObjectURL(old.link.href);
-          old.link.replaceWith("Downloaded");
-        }
-        opfsFiles.push({ name: filename, link, checked });
-      }
-      statusText.textContent = `Finished ${filename}`;
-      barFill.style.width = "100%";
+    try {
+      await plotAll(s, sink);
+    } catch (e) {
+      statusText.textContent = `Error: ${e instanceof Error ? e.message : String(e)}`;
+      bar.hidden = true;
+    } finally {
+      plotter.reset();
+      running = false;
+      startBtn.disabled = false;
+      stopBtn.disabled = true;
+      pauseBtn.disabled = true;
+      pauseBtn.textContent = "Pause";
+      await wakeLock?.release().catch(() => {});
     }
-
-    seed.fill(0);
-    driveSeed?.fill(0);
-    // WASM memory never shrinks, so drop the worker (and its multi GB heap) when idle.
-    worker.terminate();
-    worker = makeWorker();
-    statsSource.plotterHeapBytes = 0;
-    running = false;
-    paused = false;
-    startBtn.disabled = false;
-    stopBtn.disabled = true;
-    pauseBtn.disabled = true;
-    pauseBtn.textContent = "Pause";
-    await wakeLock?.release().catch(() => {});
   });
 
   pauseBtn.addEventListener("click", () => {
-    paused = !paused;
-    worker.postMessage({ type: "pause", paused });
-    pauseBtn.textContent = paused ? "Resume" : "Pause";
-    if (paused) {
-      pausedSince = performance.now();
-      statusText.textContent = "Paused. The plot stays in memory until you resume.";
-    } else {
-      pausedTotal += performance.now() - pausedSince;
-      statusText.textContent = "Resuming…";
-    }
+    plotter.setPaused(!plotter.paused);
+    pauseBtn.textContent = plotter.paused ? "Resume" : "Pause";
+    statusText.textContent = plotter.paused ? "Paused. The plot stays in memory until you resume." : "Resuming…";
   });
 
   stopBtn.addEventListener("click", () => {
-    stopAfterCurrent = true;
     stopBtn.disabled = true;
     pauseBtn.disabled = true;
-    // Stopping a paused plot needs it to wake up and see the cancel.
-    if (paused) {
-      paused = false;
-      worker.postMessage({ type: "pause", paused: false });
-    }
-    worker.postMessage({ type: "cancel" });
+    plotter.cancel();
     statusText.textContent = "Stopping…";
   });
 
-  setupValidateSection(validator, () => readSettings(form), caps.dirPicker);
-
-  // Remove plots left in browser storage by an earlier visit.
-  if (caps.opfs) {
-    const root = await navigator.storage.getDirectory();
-    for await (const name of (root as unknown as { keys(): AsyncIterable<string> }).keys()) {
-      if (name.endsWith(".plot2")) await root.removeEntry(name).catch(() => {});
-    }
-  }
-}
-
-function renderCheckCell(cell: HTMLElement, r: Report) {
-  const proofs = r.checks.find((c) => c.name === "Proofs");
-  const warned = r.checks.some((c) => !c.ok && c.warn);
-  const m = proofs?.detail.match(/^(\d+) of (\d+)/);
-  const label = m ? `${m[1]}/${m[2]} proofs` : proofs?.detail.startsWith("no proofs") ? "no proofs" : "failed";
-  const [cls, mark] = !r.ok ? ["pill-fail", "✗"] : warned ? ["pill-warn", "!"] : ["pill-ok", "✓"];
-  cell.innerHTML = `<span class="pill ${cls}">${mark} ${label}</span>`;
-  cell.title = r.checks.map((c) => `${c.ok ? "✓" : c.warn ? "!" : "✗"} ${c.name}: ${c.detail}`).join("\n");
-}
-
-
-function setupValidateSection(validator: Validator, settings: () => Settings, dirPicker: boolean) {
-  const input = $<HTMLInputElement>("#v-files");
-  const dirBtn = $<HTMLButtonElement>("#v-dir");
-  const tbody = $<HTMLTableSectionElement>("#v-results tbody");
-  if (!dirPicker) dirBtn.hidden = true;
-
-  const run = async (files: { file: File; path: string }[]) => {
-    const challenges = Math.max(1, Number($<HTMLInputElement>("#v-challenges").value) || 30);
-    const network = $<HTMLSelectElement>("#v-network").value as "auto" | "mainnet" | "testnet";
-    for (const { file, path } of files) {
-      const tr = document.createElement("tr");
-      tr.innerHTML = `<td class="file"></td>${"<td></td>".repeat(10)}<td><span class="pill pill-muted">queued</span></td>`;
-      tr.cells[0].textContent = path;
-      tbody.prepend(tr);
-      const cell = (i: number, html: string, title = "") => {
-        tr.cells[i].innerHTML = html;
-        tr.cells[i].title = title;
-      };
-      const mark = (c?: { ok: boolean; warn?: boolean; detail: string }) =>
-        c ? `<span class="${c.ok ? "ok" : c.warn ? "warn" : "fail"}">${c.ok ? "✓" : c.warn ? "!" : "✗"}</span>` : "";
-      validator
-        .check(file, { challenges, network, expectFarmerKey: settings().farmerKey || undefined, gpu: settings().gpu !== "off" }, (p) => {
-          cell(6, `${p.valid}/${p.found} <small>${p.done}/${p.total}</small>`);
-        })
-        .then((r) => {
-          const find = (name: string) => r.checks.find((c) => c.name === name);
-          const h = r.header;
-          cell(1, h ? String(h.k) : "");
-          cell(2, h ? String(h.strength) : "");
-          cell(3, r.groupId ? `<code>${r.groupId.slice(0, 8)}</code>` : "", r.groupId ?? "");
-          cell(4, h ? String(h.index) : "");
-          cell(5, h ? String(h.metaGroup) : "");
-          const proofs = find("Proofs") ?? find("Header");
-          const m = proofs?.detail.match(/^(\d+) of (\d+)/);
-          cell(6, `${mark(proofs)} ${m ? `${m[1]}/${m[2]}` : ""}`, proofs?.detail ?? "");
-          cell(7, mark(find("Keys")), find("Keys")?.detail ?? "");
-          cell(8, mark(find("File name")), find("File name")?.detail ?? "");
-          cell(9, mark(find("Farmer key")), [find("Farmer key")?.detail, r.farmerKey && `farmer ${r.farmerKey}`, r.pool && `pool ${r.pool}`].filter(Boolean).join("\n"));
-          cell(10, `${(r.ms / 1000).toFixed(1)} s`);
-          const warned = r.checks.some((c) => !c.ok && c.warn);
-          cell(11, !r.ok ? `<span class="pill pill-fail">✗ failed</span>` : warned ? `<span class="pill pill-warn">! valid</span>` : `<span class="pill pill-ok">✓ valid</span>`,
-            r.checks.map((c) => `${c.ok ? "✓" : c.warn ? "!" : "✗"} ${c.name}: ${c.detail}`).join("\n"));
-        });
-    }
-  };
-
-  input.addEventListener("change", () => {
-    run(Array.from(input.files ?? [], (file) => ({ file, path: file.name })));
-    input.value = "";
-  });
-  dirBtn.addEventListener("click", async () => {
-    try {
-      const d = await (window as unknown as { showDirectoryPicker(o: object): Promise<FileSystemDirectoryHandle> })
-        .showDirectoryPicker({ id: "plots", mode: "read" });
-      const files = await walkPlots(d);
-      files.sort((a, b) => a.path.localeCompare(b.path));
-      run(files);
-    } catch {
-      // Picker closed.
-    }
-  });
+  setupValidateSection(validator, () => readSettings(form));
 }

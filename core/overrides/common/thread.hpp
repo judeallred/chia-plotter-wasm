@@ -7,6 +7,10 @@
 // pthread_create is proxied to the browser's main thread. Here `thread` keeps the same
 // interface but runs its function as a task on a persistent pool. A thread that joins a
 // task helps run queued tasks while it waits, so nested parallel sections cannot deadlock.
+//
+// Errors: upstream never calls join() itself, it relies on the destructor, and a destructor
+// cannot throw. So a task's exception is recorded in the pool instead (the first one wins),
+// and the plot thread checks failed() at its next progress event and stops the plot.
 
 #include <atomic>
 #include <condition_variable>
@@ -52,7 +56,29 @@ public:
     unsigned threads()
     {
         ensure_started();
+        std::lock_guard<std::mutex> lock(m_);
         return static_cast<unsigned>(workers_.size()) + 1;
+    }
+
+    // Keeps the first task error until take_error().
+    void record_error(std::exception_ptr error)
+    {
+        std::lock_guard<std::mutex> lock(m_);
+        if (!error_) {
+            error_ = std::move(error);
+            failed_ = true;
+        }
+    }
+
+    // True once a task has failed. Cheap enough for every progress event.
+    bool failed() const noexcept { return failed_.load(std::memory_order_relaxed); }
+
+    // Returns and clears the recorded error, if any.
+    std::exception_ptr take_error()
+    {
+        std::lock_guard<std::mutex> lock(m_);
+        failed_ = false;
+        return std::exchange(error_, nullptr);
     }
 
     void submit(std::shared_ptr<Task> task)
@@ -85,8 +111,13 @@ private:
 
     void ensure_started()
     {
-        if (!started_) {
-            unsigned hw = std::thread::hardware_concurrency();
+        bool started = false;
+        {
+            std::lock_guard<std::mutex> lock(m_);
+            started = started_;
+        }
+        if (!started) {
+            unsigned const hw = std::thread::hardware_concurrency();
             set_threads(hw == 0 ? 1 : hw);
         }
     }
@@ -140,6 +171,8 @@ private:
     std::vector<std::thread> workers_;
     bool stop_ = false;
     bool started_ = false;
+    std::exception_ptr error_;
+    std::atomic<bool> failed_ { false };
 };
 
 } // namespace pos2w
@@ -148,8 +181,7 @@ private:
 class thread {
 public:
     template <typename F, typename... Args>
-    explicit thread(F&& f, Args&&... args)
-        : task_(std::make_shared<pos2w::TaskPool::Task>())
+    explicit thread(F&& f, Args&&... args) : task_(std::make_shared<pos2w::TaskPool::Task>())
     {
         task_->fn = [f = std::forward<F>(f), ... a = std::forward<Args>(args)]() mutable {
             std::invoke(f, a...);
@@ -162,29 +194,41 @@ public:
     thread(thread&&) noexcept = default;
     thread& operator=(thread&& other) noexcept
     {
-        if (joinable())
-            join();
+        if (joinable()) {
+            std::exception_ptr error = wait();
+            if (error)
+                pos2w::TaskPool::instance().record_error(std::move(error));
+        }
         task_ = std::move(other.task_);
         return *this;
     }
 
+    // Waits for the task. Its error, if any, goes to the pool (see the top of this file).
     ~thread()
     {
-        if (joinable())
-            join();
+        if (joinable()) {
+            std::exception_ptr error = wait();
+            if (error)
+                pos2w::TaskPool::instance().record_error(std::move(error));
+        }
     }
 
     bool joinable() const noexcept { return task_ != nullptr; }
 
     void join()
     {
-        pos2w::TaskPool::instance().wait(*task_);
-        std::exception_ptr error = task_->error;
-        task_.reset();
-        if (error)
+        if (std::exception_ptr error = wait())
             std::rethrow_exception(error);
     }
 
 private:
+    std::exception_ptr wait()
+    {
+        pos2w::TaskPool::instance().wait(*task_);
+        std::exception_ptr error = std::move(task_->error);
+        task_.reset();
+        return error;
+    }
+
     std::shared_ptr<pos2w::TaskPool::Task> task_;
 };

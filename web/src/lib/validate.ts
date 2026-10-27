@@ -35,12 +35,31 @@ export interface Progress {
 const hex = (b: Uint8Array) => Array.from(b, (x) => x.toString(16).padStart(2, "0")).join("");
 
 export class Validator {
-  private worker = new Worker(new URL("./validator.worker.ts", import.meta.url), { type: "module" });
+  private worker = this.makeWorker();
   private nextId = 1;
   private handlers = new Map<number, (m: FromValidator) => void>();
 
-  constructor() {
-    this.worker.onmessage = (ev: MessageEvent<FromValidator>) => this.handlers.get(ev.data.id)?.(ev.data);
+  // A crash (for example running out of memory on a k28 plot) fails every pending check, so
+  // nothing waits forever, and the next check gets a fresh worker.
+  private makeWorker(): Worker {
+    const w = new Worker(new URL("./validator.worker.ts", import.meta.url), { type: "module" });
+    w.onmessage = (ev: MessageEvent<FromValidator>) => this.handlers.get(ev.data.id)?.(ev.data);
+    const crashed = (message: string) => {
+      w.terminate();
+      this.worker = this.makeWorker();
+      for (const [id, handle] of [...this.handlers]) {
+        handle({
+          type: "result", id, network: "mainnet", challenges: 0, found: 0, solved: 0, valid: 0, ms: 0, gpuNote: "",
+          error: `validator crashed: ${message}`,
+        });
+      }
+    };
+    w.onerror = (e) => {
+      e.preventDefault();
+      crashed(e.message || "unknown error");
+    };
+    w.onmessageerror = () => crashed("unreadable message");
+    return w;
   }
 
   check(

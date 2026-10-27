@@ -3,8 +3,9 @@
 export type Sink =
   // Write into a folder the user picked with the File System Access API.
   | { kind: "dir"; dir: FileSystemDirectoryHandle }
-  // Write into the origin private file system, then hand the File back for download.
-  | { kind: "opfs" };
+  // Write into this tab's folder in the origin private file system (see plot-storage.ts),
+  // then hand the File back for download.
+  | { kind: "opfs"; folder: string };
 
 export interface PlotJob {
   k: number;
@@ -16,8 +17,8 @@ export interface PlotJob {
   memo: Uint8Array;
   testnet: boolean;
   threads: number;
-  // Use WebGPU when available: for g(x) and all table pairs ("gpu"), or for g(x) with table
-  // pairs split between CPU and GPU ("hybrid"). The CPU is used if off or the GPU fails.
+  // Use WebGPU when available: for g(x) and all table pairs ("gpu"), or with table pairs
+  // split between CPU and GPU ("hybrid"). The CPU is used if off or the GPU fails.
   gpu: GpuMode;
   filename: string;
   sink: Sink;
@@ -38,7 +39,7 @@ export interface Timings {
   tablesMs: [number, number, number, number];
   // Time spent in GPU requests, 0 if the GPU was not used.
   gpuMs: number;
-  // What ran g(x): the GPU adapter, or why the CPU was used.
+  // What the GPU did (the adapter and where the time went), or why the CPU was used.
   gpuNote: string;
   // [table][phase] ms: tables Xs, T1, T2, T3; phases hash, sort, find pairs, post sort, misc.
   phasesMs: number[][];

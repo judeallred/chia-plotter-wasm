@@ -8,7 +8,15 @@
 
 namespace pos2w {
 
-enum Phase { kHash = 0, kSort = 1, kFindPairs = 2, kPostSort = 3, kMisc = 4, kNumPhases = 5 };
+// Prefixed so they do not collide with the GPU ops in pos2w::gpu (gpu::kFindPairs).
+enum Phase {
+    kPhaseHash = 0,
+    kPhaseSort = 1,
+    kPhaseFindPairs = 2,
+    kPhasePostSort = 3,
+    kPhaseMisc = 4,
+    kNumPhases = 5
+};
 
 // [table][phase] in milliseconds. Table 0 is Xs, which only has hash and sort.
 inline std::atomic<double> g_phase_ms[4][kNumPhases];
@@ -26,11 +34,14 @@ struct PhaseRecorder {
     PhaseRecorder(int table, Timings const& t) : table_(table), t_(t) {}
     ~PhaseRecorder()
     {
-        g_phase_ms[table_][kHash] = t_.hash_time_ms;
-        g_phase_ms[table_][kSort] = t_.sort_time_ms;
-        g_phase_ms[table_][kFindPairs] = t_.find_pairs_time_ms;
-        g_phase_ms[table_][kPostSort] = t_.post_sort_time_ms;
-        g_phase_ms[table_][kMisc] = t_.misc_time_ms;
+        g_phase_ms[table_][kPhaseHash] = t_.hash_time_ms;
+        g_phase_ms[table_][kPhaseSort] = t_.sort_time_ms;
+        // XsConstructor's timings only have hash and sort.
+        if constexpr (requires { t_.find_pairs_time_ms; }) {
+            g_phase_ms[table_][kPhaseFindPairs] = t_.find_pairs_time_ms;
+            g_phase_ms[table_][kPhasePostSort] = t_.post_sort_time_ms;
+            g_phase_ms[table_][kPhaseMisc] = t_.misc_time_ms;
+        }
     }
     int table_;
     Timings const& t_;

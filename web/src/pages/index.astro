@@ -44,9 +44,9 @@ import "../styles/app.css";
 
         <label>
           Farmer public key
-          <input class="mono" name="farmerKey" required autocomplete="off" spellcheck="false"
+          <input class="mono" name="farmerKey" autocomplete="off" spellcheck="false"
             placeholder="96 hex characters, from `chia keys show`" />
-          <span class="err" data-for="farmerKey"></span>
+          <span class="err" aria-live="polite" data-for="farmerKey"></span>
         </label>
 
         <fieldset>
@@ -56,12 +56,12 @@ import "../styles/app.css";
           <label data-mode="contract">
             Pool contract address
             <input class="mono" name="poolAddress" autocomplete="off" spellcheck="false" placeholder="xch1… from `chia plotnft show`" />
-            <span class="err" data-for="poolAddress"></span>
+            <span class="err" aria-live="polite" data-for="poolAddress"></span>
           </label>
           <label data-mode="pk" hidden>
             Pool public key
             <input class="mono" name="poolKey" autocomplete="off" spellcheck="false" placeholder="96 hex characters" />
-            <span class="err" data-for="poolKey"></span>
+            <span class="err" aria-live="polite" data-for="poolKey"></span>
           </label>
         </fieldset>
 
@@ -217,13 +217,14 @@ import "../styles/app.css";
           <p class="option-heading">Recommended</p>
           <label class="option"><input type="radio" name="groupKeys" value="none" checked /> <span><b>SSD or always on storage:</b> no groups. Every plot has its own key and passes the filter on its own, like <code>chia plots create2</code>.</span></label>
           <label class="option"><input type="radio" name="groupKeys" value="drive" /> <span><b>Hard drive that sleeps:</b> one plot key per drive, with its plots spread over meta groups 0 to 15, as CHIP-49 recommends. The drive wakes about as often as a single group but serves 1/16 of its plots at each of 16 signage points.</span></label>
-          <div id="drive-panel" class="subpanel" data-group-modes="drive">
+          <div class="subpanel" data-group-modes="drive">
             <label class="option"><input type="radio" name="driveStart" value="new" checked /> Start a new drive (new plot key)</label>
             <label class="option"><input type="radio" name="driveStart" value="continue" /> Add to a drive I already plotted</label>
             <div id="drive-continue" hidden>
               <div class="actions">
                 <button type="button" id="drive-dir" class="btn btn-secondary">Choose the drive's plot folder…</button>
-                <label class="btn btn-secondary">Choose plots from it…<input id="drive-file" type="file" accept=".plot2" multiple hidden /></label>
+                <button type="button" class="btn btn-secondary" data-opens="drive-file">Choose plots from it…</button>
+                <input id="drive-file" type="file" accept=".plot2" multiple hidden />
               </div>
               <label id="drive-pick-label" hidden>
                 Plot key on this drive
@@ -253,7 +254,8 @@ import "../styles/app.css";
             </p>
             <div class="actions">
               <button type="button" id="cont-dir" class="btn btn-secondary">Choose the group's folder…</button>
-              <label class="btn btn-secondary">Choose one plot…<input id="cont-file" type="file" accept=".plot2" hidden /></label>
+              <button type="button" class="btn btn-secondary" data-opens="cont-file">Choose one plot…</button>
+              <input id="cont-file" type="file" accept=".plot2" hidden />
             </div>
             <label id="cont-pick-label" hidden>
               Group
@@ -310,7 +312,7 @@ import "../styles/app.css";
           <label class="option"><input type="radio" name="output" value="dir" /> <span>Save into a folder <small id="dir-name"></small></span></label>
           <div id="dir-panel" class="subpanel" hidden>
             <button type="button" id="pick-dir" class="btn btn-secondary">Choose folder…</button>
-            <p class="hint" id="dir-hint">
+            <p class="hint">
               Use a folder just for plots, for example a <code>plots</code> folder on the drive you
               farm from. Chrome won't open top level folders such as your home folder, Desktop,
               Documents, or Downloads, or any system folder, but folders inside them are fine.
@@ -345,13 +347,13 @@ import "../styles/app.css";
           <button type="button" id="pause" class="btn btn-secondary" disabled title="Holds the current plot in memory (about 11 GB at k28) until you resume. A paused plot does not survive closing or reloading the tab.">Pause</button>
           <button type="button" id="stop" class="btn btn-danger" disabled>Stop</button>
         </div>
-        <p class="err" id="form-error"></p>
+        <p class="err" id="form-error" role="alert"></p>
       </form>
 
       <section class="card" id="status" hidden>
         <h2>Current plot</h2>
-        <div id="bar" class="h-2.5 overflow-hidden rounded bg-line"><div id="bar-fill" class="h-full w-0 bg-accent transition-[width] duration-200"></div></div>
-        <p id="status-text"></p>
+        <div id="bar" class="h-2.5 overflow-hidden rounded bg-line" role="progressbar" aria-label="Plot progress" aria-valuemin="0" aria-valuemax="100"><div id="bar-fill" class="h-full w-0 bg-accent transition-[width] duration-200"></div></div>
+        <p id="status-text" aria-live="polite"></p>
       </section>
 
       <section class="card">
@@ -409,7 +411,8 @@ import "../styles/app.css";
           </label>
         </div>
         <div class="actions">
-          <label class="btn btn-secondary">Choose plot files…<input id="v-files" type="file" accept=".plot2" multiple hidden /></label>
+          <button type="button" class="btn btn-secondary" data-opens="v-files">Choose plot files…</button>
+          <input id="v-files" type="file" accept=".plot2" multiple hidden />
           <button type="button" id="v-dir" class="btn btn-secondary">Check a folder…</button>
           <small>Folders are searched recursively, including subfolders.</small>
         </div>
@@ -427,7 +430,16 @@ import "../styles/app.css";
 
     <script>
       import { start } from "../lib/app";
-      start();
+      start().catch((e: unknown) => {
+        // Without this the page would just sit there with no plotter and no message.
+        const status = document.getElementById("status");
+        const text = document.getElementById("status-text");
+        if (status && text) {
+          status.hidden = false;
+          text.textContent = `The page failed to start: ${e instanceof Error ? e.message : String(e)}`;
+        }
+        throw e;
+      });
     </script>
   </body>
 </html>

@@ -20,9 +20,10 @@ export interface SessionRecord {
   settings: Record<string, unknown>;
 }
 
+// Sorted most recently updated first, as writeAll stores them.
 function readAll(): SessionRecord[] {
   try {
-    const list = JSON.parse(localStorage.getItem(STORE_KEY) ?? "[]");
+    const list: unknown = JSON.parse(localStorage.getItem(STORE_KEY) ?? "[]");
     return Array.isArray(list) ? (list as SessionRecord[]) : [];
   } catch {
     return [];
@@ -83,20 +84,17 @@ export async function startSession(): Promise<{ id: string; settings: Record<str
   return { id, settings: saved };
 }
 
-export function getSession(id: string): SessionRecord | undefined {
+function getSession(id: string): SessionRecord | undefined {
   return readAll().find((s) => s.id === id);
 }
 
+// Most recently updated first.
 export function listSessions(): SessionRecord[] {
-  return readAll().sort((a, b) => b.updated - a.updated);
+  return readAll();
 }
 
 export function saveSession(id: string, settings: Record<string, unknown>, summary: string) {
   const list = readAll().filter((s) => s.id !== id);
   list.push({ id, updated: Date.now(), summary, settings });
   writeAll(list);
-}
-
-export function deleteSession(id: string) {
-  writeAll(readAll().filter((s) => s.id !== id));
 }

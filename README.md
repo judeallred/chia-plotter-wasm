@@ -74,7 +74,7 @@ memory never shrinks, so the page drops the plotter worker when it goes idle.
 ## WebGPU
 
 WGSL is the only GPU language browsers run (no CUDA, OpenCL or SPIR-V), and the work here is
-integer AES, which WGSL handles fine. What runs on the GPU (`web/src/lib/gpu.ts`, requests
+integer AES, which WGSL handles fine. What runs on the GPU (`web/src/lib/gpu/`, requests
 from C++ through `core/src/gpu_bridge.hpp`):
 
 - Xs: `g(x)` for every x.
@@ -114,8 +114,32 @@ s for chia_rs), almost all in the solver's `g(x)` pass, which now runs on the GP
   thread-per-task pattern with a persistent pool, because creating pthreads in WASM is slow
   and stalls when done from another pthread.
 - `keys/` Rust crate for plot ID and memo derivation, compiled to WASM with wasm-pack.
-- `web/` Astro site styled with Tailwind CSS v4 (`src/styles/app.css` holds the theme tokens and a small components layer). The plotter runs in a Web Worker and streams the file to disk.
+- `web/` Astro site styled with Tailwind CSS v4 (`src/styles/app.css` holds the theme tokens and a small components layer). The plotter runs in a Web Worker and streams the file to disk. `src/lib/app.ts` wires together the modules next to it (settings, estimates, existing plots, plan, history, validate UI), and `src/lib/gpu/` holds the WebGPU kernels, device, self test and request service.
 - `tools/` checker and test scripts.
+
+### Why the glue is C++ and the key code is Rust
+
+New code we own is written in Rust where it can be. The C++ in `core/` is the exception,
+for two reasons:
+
+- It is glue that lives inside pos2-chip's C++: `table_gpu.hpp` and `thread.hpp` are
+  templates injected into upstream classes and headers, and `pos2w.cpp` and `pos2v.cpp`
+  call upstream templates (`Plotter`, `PlotFile`, `Prover`, `Solver`) directly. Rust would
+  need a C++ shim for each of those, which is the same code again behind another boundary.
+- k28 needs the memory64 build, and Rust has no 64 bit Emscripten target that can link into
+  an Emscripten pthreads module.
+
+The C++ follows pos2-chip's `.clang-format` (copied to `core/.clang-format`).
+
+### Rust checks
+
+`keys/` builds with rustfmt and clippy at their strictest: all, pedantic, nursery and cargo
+lint groups plus restriction lints against panics, indexing and lossy casts, configured in
+`keys/Cargo.toml`. `scripts/check-rust.sh` runs `cargo fmt --check`, clippy with
+`-D warnings` natively and for `wasm32-unknown-unknown`, and the tests, whose vectors come
+from chia-blockchain's own functions. Enable the pre-commit hook that runs it with
+`git config core.hooksPath .githooks`. VS Code formats on save and shows clippy through
+`.vscode/settings.json`.
 
 ## Build and run
 

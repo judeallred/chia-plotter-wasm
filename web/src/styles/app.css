@@ -172,9 +172,6 @@
   td.group {
     @apply font-mono text-xs whitespace-nowrap;
   }
-  td ul.checks {
-    @apply m-0 list-disc pl-4 text-xs;
-  }
   table.data thead th {
     @apply border-b border-line pb-2 text-xs font-medium tracking-wide text-muted uppercase;
   }

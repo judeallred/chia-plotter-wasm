@@ -3,6 +3,11 @@
   "type": "module",
   "description": "Chia v2 plot ID and memo derivation for the browser",
   "version": "0.1.0",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/judeallred/chia-plotter-wasm"
+  },
   "files": [
     "plot_keys_bg.wasm",
     "plot_keys.js",
@@ -12,5 +17,10 @@
   "types": "plot_keys.d.ts",
   "sideEffects": [
     "./snippets/*"
+  ],
+  "keywords": [
+    "chia",
+    "plot",
+    "wasm"
   ]
 }

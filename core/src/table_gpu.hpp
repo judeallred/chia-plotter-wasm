@@ -1,6 +1,7 @@
 #pragma once
 
-// GPU and hybrid pair finding for table construction.
+// GPU paths for table construction: the Xs g(x) pass (gpu_fill_xs) and GPU and hybrid pair
+// finding (GpuSection).
 //
 // Upstream's TableConstructorGeneric walks the sections in order, and for each one loops
 // over match keys: hash every left candidate to its matching target, sort, and merge with
@@ -42,6 +43,22 @@ inline void feistel_round_keys(ProofParams const& params, uint32_t out[12])
         out[3 * r + 1] = static_cast<uint32_t>((key >> k) & mask);
         out[3 * r + 2] = static_cast<uint32_t>((key >> (2 * k)) & mask);
     }
+}
+
+// Fills out with {g(x), x} for every x, in x order, on the GPU. Returns false, leaving out
+// untouched, when no GPU is attached or it fails, and the caller runs its CPU loop instead.
+// A template because Xs_Candidate is defined after this header is included.
+template <class XsCandidate>
+bool gpu_fill_xs(ProofParams const& params, std::span<XsCandidate> out)
+{
+    static_assert(sizeof(XsCandidate) == 8 && offsetof(XsCandidate, match_info) == 0
+            && offsetof(XsCandidate, x) == 4,
+        "kFillXs writes {match_info, x} pairs");
+    gpu::Request req {};
+    req.op = gpu::kFillXs;
+    gpu::fill_params(req, params);
+    req.out_ptr = reinterpret_cast<uintptr_t>(out.data());
+    return gpu::call(req);
 }
 
 template <class Ctor, class C, class P>
@@ -105,10 +122,10 @@ public:
         if (!hybrid_) {
             // Nothing else appends during this section, so the GPU can write in place. That
             // saves holding a section's pairs (1 GB at k28) until the copy.
-            std::size_t const at = out_count.load();
+            std::size_t const at = std::min(out_count.load(), out.size());
             req.direct = 1;
             req.out_ptr = reinterpret_cast<uintptr_t>(out.data() + at);
-            req.out_capacity = out.size() > at ? out.size() - at : 0;
+            req.out_capacity = out.size() - at;
         }
         if (!call_.submit(req)) {
             gpu_l_ = 0;
@@ -137,7 +154,8 @@ public:
         else {
             collect(res, cpu_ms);
         }
-        return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - now).count();
+        return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - now)
+            .count();
     }
 
 private:
@@ -160,9 +178,7 @@ private:
                 throw std::runtime_error("GPU failed while returning table pairs");
             }
         }
-        if (hybrid_) {
-            rebalance(res.gpu_ms, cpu_ms);
-        }
+        rebalance(res.gpu_ms, cpu_ms);
     }
 
     // Moves the split towards the point where both sides take the same time.
@@ -179,20 +195,29 @@ private:
         gpu::g_split[table_id_] = std::clamp(next, 0.05, 0.98);
     }
 
-    // Upstream's per match key steps for the GPU's share, used only if the GPU fails.
+    // Upstream's per match key steps for the GPU's share, used only if the GPU fails. Each
+    // left candidate pairs independently, so the share is done in pieces: a whole share can
+    // be a gigabyte at k28, in a tab already close to its memory limit.
     void cpu_fallback()
     {
-        std::vector<C> l(gpu_l_);
-        for (uint32_t mk = 0; mk < num_match_keys_; ++mk) {
-            std::span<C const> r(prev_.data() + r_row_[mk], r_row_[mk + 1] - r_row_[mk]);
-            if (r.empty()) {
-                continue;
+        constexpr std::size_t kPiece = std::size_t(1) << 22;
+        std::vector<C> l(std::min(gpu_l_, kPiece));
+        for (std::size_t begin = 0; begin < gpu_l_; begin += kPiece) {
+            std::size_t const n = std::min(kPiece, gpu_l_ - begin);
+            std::span<C> piece(l.data(), n);
+            for (uint32_t mk = 0; mk < num_match_keys_; ++mk) {
+                std::span<C const> r(prev_.data() + r_row_[mk], r_row_[mk + 1] - r_row_[mk]);
+                if (r.empty()) {
+                    continue;
+                }
+                parallel_for_range(std::size_t(0), n, [&](std::size_t i) {
+                    piece[i] = ctor_.matching_target(prev_[l_begin_ + begin + i], mk);
+                });
+                std::sort(piece.begin(), piece.end(), [](C const& a, C const& b) {
+                    return a.match_info < b.match_info;
+                });
+                ctor_.find_pairs_into(std::span<C const>(piece), r, out_, out_count_);
             }
-            parallel_for_range(std::size_t(0), gpu_l_, [&](std::size_t i) {
-                l[i] = ctor_.matching_target(prev_[l_begin_ + i], mk);
-            });
-            std::sort(l.begin(), l.end(), [](C const& a, C const& b) { return a.match_info < b.match_info; });
-            ctor_.find_pairs_into(std::span<C const>(l), r, out_, out_count_);
         }
     }
 

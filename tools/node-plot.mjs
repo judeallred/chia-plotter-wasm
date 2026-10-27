@@ -12,17 +12,16 @@ const M = await create({
   printErr: (s) => console.error("[wasm]", s),
   onAbort: (r) => console.error("[wasm abort]", r),
 });
-const big = bits === "64";
 // In memory64 builds pointers cross the JS boundary as BigInt. In wasm32 builds they are
-// signed i32, so pointers above 2 GB arrive negative and need >>> 0.
-const ptr = (p) => (big ? Number(p) : p >>> 0);
-const toPtr = (n) => (big ? BigInt(n) : n);
+// signed i32, so pointers above 2 GB arrive negative. Same rules as web/src/lib/gpu/host.ts.
+const ptr = (p) => (typeof p === "bigint" ? Number(p) : p < 0 ? p + 2 ** 32 : p);
+const at = (n) => (bits === "64" ? BigInt(n) : n);
 
 // The heap can grow on another thread, which leaves M.HEAPU8 pointing at the old buffer.
 // Always build a fresh view.
 const heap = () => new Uint8Array(M.wasmMemory.buffer);
 const alloc = (bytes) => {
-  const p = ptr(M._malloc(toPtr(bytes.length)));
+  const p = ptr(M._malloc(at(bytes.length)));
   heap().set(bytes, p);
   return p;
 };
@@ -32,7 +31,7 @@ const pId = alloc(plotId), pMemo = alloc(memo);
 
 if (process.env.THREADS) M._pos2w_set_threads(+process.env.THREADS);
 const t0 = performance.now();
-const rc = M._pos2w_start(toPtr(pId), +k, +strength, 0, 0, toPtr(pMemo), memo.length, process.env.TESTNET ? 1 : 0);
+const rc = M._pos2w_start(at(pId), +k, +strength, 0, 0, at(pMemo), memo.length, process.env.TESTNET ? 1 : 0);
 if (rc !== 0) throw new Error(`start failed ${rc}`);
 while (M._pos2w_status() === 1) {
   await new Promise((r) => setTimeout(r, 250));
