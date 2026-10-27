@@ -23,6 +23,7 @@ interface Settings {
   gpu: boolean;
   groupSize: number;
   metaGroup: number;
+  groupFolders: boolean;
 }
 
 const $ = <T extends Element>(sel: string) => document.querySelector(sel) as T;
@@ -48,7 +49,7 @@ function renderEnv(caps: ReturnType<typeof capabilities>) {
     [true, `${caps.threads} logical CPU cores`],
     [caps.memory64, caps.memory64 ? "WebAssembly memory64 supported (k28 possible)" : "No WebAssembly memory64, so k28 is unavailable. Try a recent Chrome, Edge, or Firefox."],
     [caps.dirPicker, caps.dirPicker ? "Can save straight into a folder" : "No folder access, plots will be downloaded"],
-    [true, caps.webgpu ? "WebGPU available (not used by the plotter yet)" : "WebGPU not available"],
+    [true, caps.webgpu ? "WebGPU available, used for the g(x) hash when plotting and validating" : "WebGPU not available, everything runs on the CPU"],
   ];
   if (caps.deviceMemory !== undefined) {
     items.push([caps.deviceMemory >= 8, `Browser reports ${caps.deviceMemory} GB of device memory`]);
@@ -76,14 +77,18 @@ function readSettings(form: HTMLFormElement): Settings {
     gpu: s("gpu") !== "off",
     groupSize: Number(s("groupSize")),
     metaGroup: Number(s("metaGroup")),
+    groupFolders: f.get("groupFolders") === "on",
   };
 }
 
-function applySettings(form: HTMLFormElement, s: Partial<Settings>) {
+function applySettings(form: HTMLFormElement, s: Partial<Settings> | Record<string, unknown>) {
   for (const [name, value] of Object.entries(s)) {
     const els = form.querySelectorAll<HTMLInputElement | HTMLSelectElement>(`[name="${name}"]`);
     els.forEach((el) => {
       if (el instanceof HTMLInputElement && el.type === "radio") el.checked = el.value === String(value);
+      else if (el instanceof HTMLInputElement && el.type === "checkbox") el.checked = Boolean(value);
+      // A saved value that matches no option would leave the select blank, so skip it.
+      else if (el instanceof HTMLSelectElement && ![...el.options].some((o) => o.value === String(value))) return;
       else el.value = String(value);
     });
   }
@@ -142,8 +147,9 @@ export async function start() {
     output: caps.dirPicker ? "dir" : "download",
   });
   try {
-    const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) ?? "{}") as Partial<Settings>;
-    applySettings(form, saved);
+    const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) ?? "{}") as Record<string, unknown>;
+    // Settings store gpu as a boolean, the form uses "on" and "off". Default to the GPU.
+    applySettings(form, { ...saved, gpu: saved.gpu === false ? "off" : "on" });
   } catch {
     // Ignore bad saved settings.
   }
@@ -322,9 +328,13 @@ export async function start() {
       const d = derive(seed, s.farmerKey, s.poolMode === "pk" ? s.poolKey : "", s.poolMode === "contract" ? s.poolAddress : "", s.strength, plotIndex, s.metaGroup);
       const filename = `plot-k${s.k}-${d.plot_id_hex}.plot2`;
       const group = { strength: s.strength, groupId: d.plot_group_id_hex, index: plotIndex, size: s.groupSize, metaGroup: s.metaGroup };
+      let plotSink: Sink = sink;
+      if (sink.kind === "dir" && s.groupFolders) {
+        plotSink = { kind: "dir", dir: await sink.dir.getDirectoryHandle(`group-${d.plot_group_id_hex.slice(0, 16)}`, { create: true }) };
+      }
       const job: PlotJob = {
         k: s.k, strength: s.strength, plotIndex, metaGroup: s.metaGroup, plotId: d.plot_id, memo: d.memo,
-        testnet: s.network === "testnet", threads: s.threads, gpu: s.gpu, filename, sink,
+        testnet: s.network === "testnet", threads: s.threads, gpu: s.gpu, filename, sink: plotSink,
       };
       d.free();
       const res = await runOne(job);
@@ -337,7 +347,7 @@ export async function start() {
       let checked: Promise<unknown> = Promise.resolve();
       if (s.autoChecks > 0) {
         // Read the plot back from where it was saved, so the check also covers the write.
-        const file = res.file ?? (sink.kind === "dir" ? await sink.dir.getFileHandle(filename).then((h) => h.getFile()) : undefined);
+        const file = res.file ?? (plotSink.kind === "dir" ? await plotSink.dir.getFileHandle(filename).then((h) => h.getFile()) : undefined);
         if (file) {
           checkCell.textContent = "queued";
           checked = validator
@@ -396,9 +406,6 @@ function renderCheckCell(cell: HTMLElement, r: Report) {
   cell.title = r.checks.map((c) => `${c.ok ? "✓" : c.warn ? "!" : "✗"} ${c.name}: ${c.detail}`).join("\n");
 }
 
-function escapeHtml(t: string) {
-  return t.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]!);
-}
 
 function setupValidateSection(validator: Validator, settings: () => Settings, dirPicker: boolean) {
   const input = $<HTMLInputElement>("#v-files");
@@ -406,51 +413,68 @@ function setupValidateSection(validator: Validator, settings: () => Settings, di
   const tbody = $<HTMLTableSectionElement>("#v-results tbody");
   if (!dirPicker) dirBtn.hidden = true;
 
-  const run = async (files: File[]) => {
+  const run = async (files: { file: File; path: string }[]) => {
     const challenges = Math.max(1, Number($<HTMLInputElement>("#v-challenges").value) || 30);
     const network = $<HTMLSelectElement>("#v-network").value as "auto" | "mainnet" | "testnet";
-    for (const file of files) {
+    for (const { file, path } of files) {
       const tr = document.createElement("tr");
-      tr.innerHTML = `<td class="file"></td><td>…</td><td>queued</td><td></td>`;
-      tr.cells[0].textContent = file.name;
+      tr.innerHTML = `<td class="file"></td>${"<td></td>".repeat(10)}<td>queued</td>`;
+      tr.cells[0].textContent = path;
       tbody.prepend(tr);
+      const cell = (i: number, html: string, title = "") => {
+        tr.cells[i].innerHTML = html;
+        tr.cells[i].title = title;
+      };
+      const mark = (c?: { ok: boolean; warn?: boolean; detail: string }) =>
+        c ? `<span class="${c.ok ? "ok" : c.warn ? "warn" : "fail"}">${c.ok ? "✓" : c.warn ? "!" : "✗"}</span>` : "";
       validator
         .check(file, { challenges, network, expectFarmerKey: settings().farmerKey || undefined, gpu: settings().gpu }, (p) => {
-          tr.cells[2].textContent = `${p.done}/${p.total} challenges, ${p.valid}/${p.found} proofs valid`;
+          cell(6, `${p.valid}/${p.found} <small>${p.done}/${p.total}</small>`);
         })
         .then((r) => {
-          tr.cells[1].textContent = r.header ? String(r.header.k) : "";
-          tr.cells[2].innerHTML = r.ok
-            ? `<span class="ok">✓ valid</span> <small>${(r.ms / 1000).toFixed(1)} s</small>`
-            : `<span class="fail">✗ failed</span>`;
-          const items = r.checks
-            .map((c) => `<li class="${c.ok ? "ok" : c.warn ? "warn" : "fail"}">${c.name}: ${escapeHtml(c.detail)}</li>`)
-            .join("");
-          const meta = [
-            r.header ? `strength ${r.header.strength}, group ${r.groupId?.slice(0, 8) ?? "?"}, plot index ${r.header.index}, meta group ${r.header.metaGroup}` : "",
-            r.farmerKey ? `farmer ${r.farmerKey.slice(0, 12)}…` : "",
-            r.pool ? `pool ${r.pool.length > 70 ? r.pool.slice(0, 12) + "…" : r.pool}` : "",
-          ].filter(Boolean).join(", ");
-          tr.cells[3].innerHTML = `<ul class="checks">${items}</ul><small>${escapeHtml(meta)}</small>`;
+          const find = (name: string) => r.checks.find((c) => c.name === name);
+          const h = r.header;
+          cell(1, h ? String(h.k) : "");
+          cell(2, h ? String(h.strength) : "");
+          cell(3, r.groupId ? `<code>${r.groupId.slice(0, 8)}</code>` : "", r.groupId ?? "");
+          cell(4, h ? String(h.index) : "");
+          cell(5, h ? String(h.metaGroup) : "");
+          const proofs = find("Proofs") ?? find("Header");
+          const m = proofs?.detail.match(/^(\d+) of (\d+)/);
+          cell(6, `${mark(proofs)} ${m ? `${m[1]}/${m[2]}` : ""}`, proofs?.detail ?? "");
+          cell(7, mark(find("Keys")), find("Keys")?.detail ?? "");
+          cell(8, mark(find("File name")), find("File name")?.detail ?? "");
+          cell(9, mark(find("Farmer key")), [find("Farmer key")?.detail, r.farmerKey && `farmer ${r.farmerKey}`, r.pool && `pool ${r.pool}`].filter(Boolean).join("\n"));
+          cell(10, `${(r.ms / 1000).toFixed(1)} s`);
+          cell(11, r.ok ? `<span class="ok">✓ valid</span>` : `<span class="fail">✗ failed</span>`,
+            r.checks.map((c) => `${c.ok ? "✓" : c.warn ? "!" : "✗"} ${c.name}: ${c.detail}`).join("\n"));
         });
     }
   };
 
+  // Lists .plot2 files under dir, including subfolders, with their relative paths.
+  const walk = async (d: FileSystemDirectoryHandle, prefix = ""): Promise<{ file: File; path: string }[]> => {
+    const out: { file: File; path: string }[] = [];
+    for await (const entry of (d as unknown as { values(): AsyncIterable<FileSystemHandle> }).values()) {
+      if (entry.kind === "directory") {
+        out.push(...(await walk(entry as FileSystemDirectoryHandle, `${prefix}${entry.name}/`)));
+      } else if (entry.name.endsWith(".plot2")) {
+        out.push({ file: await (entry as FileSystemFileHandle).getFile(), path: prefix + entry.name });
+      }
+    }
+    return out;
+  };
+
   input.addEventListener("change", () => {
-    run(Array.from(input.files ?? []));
+    run(Array.from(input.files ?? [], (file) => ({ file, path: file.name })));
     input.value = "";
   });
   dirBtn.addEventListener("click", async () => {
     try {
       const d = await (window as unknown as { showDirectoryPicker(o: object): Promise<FileSystemDirectoryHandle> })
         .showDirectoryPicker({ id: "plots", mode: "read" });
-      const files: File[] = [];
-      for await (const entry of (d as unknown as { values(): AsyncIterable<FileSystemHandle> }).values()) {
-        if (entry.kind === "file" && entry.name.endsWith(".plot2")) {
-          files.push(await (entry as FileSystemFileHandle).getFile());
-        }
-      }
-      files.sort((a, b) => a.name.localeCompare(b.name));
+      const files = await walk(d);
+      files.sort((a, b) => a.path.localeCompare(b.path));
       run(files);
     } catch {
       // Picker closed.

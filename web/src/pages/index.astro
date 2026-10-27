@@ -53,7 +53,7 @@ import "../styles/app.css";
           <label>
             Strength
             <input name="strength" type="number" min="2" max="17" value="2" />
-            <small>2 to 17. Each step halves how often the plot passes the filter.</small>
+            <small>2 to 17. Each step halves how often the plot passes the filter, and consensus doubles its chance to win when it passes, so expected rewards are the same at any strength. Higher means fewer disk reads but slower plotting and proving. The filter caps at 2^13 today (strength 6), higher values only start mattering as scheduled filter reductions arrive.</small>
           </label>
           <label>
             Plots per group
@@ -106,10 +106,14 @@ import "../styles/app.css";
           <p class="hint" id="dir-hint">
             Use a folder just for plots, for example a <code>plots</code> folder on the drive you
             farm from. Chrome won't open top level folders such as your home folder, Desktop,
-            Documents, or Downloads, or any system folder, but folders inside them are fine. Use
-            <b>New Folder</b> in the picker to make one. Then tell your harvester about it with
-            <code>chia plots add -d &lt;folder&gt;</code>.
+            Documents, or Downloads, or any system folder, but folders inside them are fine.
+            Use <b>New Folder</b> in the picker to make one. Then tell your harvester about it
+            with <code>chia plots add -d &lt;folder&gt;</code>.
           </p>
+          <label class="inline">
+            <input type="checkbox" name="groupFolders" />
+            Put each plot group in its own subfolder, <code>group-&lt;group id&gt;</code>
+          </label>
         </fieldset>
 
         <label>
@@ -159,8 +163,8 @@ import "../styles/app.css";
       <section class="card" id="validate">
         <h2>Validate plots</h2>
         <p class="hint">
-          Check existing <code>.plot2</code> files with the same steps as
-          <code>chia plots check</code>: look up proofs for each challenge, solve them, and
+          Check existing <code>.plot2</code> files with the same steps as <code>chia plots check</code>:
+          look up proofs for each challenge, solve them, and
           validate them. Also checks that the keys in the plot produce its plot ID. Files are
           read in place in your browser. Nothing is uploaded.
         </p>
@@ -182,9 +186,10 @@ import "../styles/app.css";
         <div class="actions">
           <label class="button secondary">Choose plot files…<input id="v-files" type="file" accept=".plot2" multiple hidden /></label>
           <button type="button" id="v-dir" class="secondary">Check a folder…</button>
+          <small>Folders are searched recursively, including subfolders.</small>
         </div>
         <table id="v-results">
-          <thead><tr><th>File</th><th>k</th><th>Result</th><th>Details</th></tr></thead>
+          <thead><tr><th>File</th><th>k</th><th>Strength</th><th>Group</th><th>Index</th><th>Meta</th><th>Proofs</th><th>Keys</th><th>Name</th><th>Farmer</th><th>Time</th><th>Result</th></tr></thead>
           <tbody></tbody>
         </table>
       </section>
