@@ -267,3 +267,47 @@ td.group {
   font-size: 0.75rem;
   white-space: nowrap;
 }
+
+details.explain {
+  margin: 4px 0 10px;
+  font-size: 0.9rem;
+}
+
+details.explain summary {
+  cursor: pointer;
+  color: var(--accent);
+  font-weight: 500;
+}
+
+details.explain[open] {
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 8px 14px;
+}
+
+details.explain h3 {
+  font-size: 0.95rem;
+  margin: 14px 0 4px;
+}
+
+details.explain p,
+details.explain li,
+details.explain dd {
+  color: var(--fg);
+  line-height: 1.5;
+}
+
+details.explain dt {
+  font-weight: 600;
+  margin-top: 8px;
+}
+
+details.explain dd {
+  margin-left: 14px;
+}
+
+table.mini {
+  width: auto;
+  font-size: 0.85rem;
+}

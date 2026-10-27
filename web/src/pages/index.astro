@@ -71,6 +71,85 @@ import "../styles/app.css";
 
         <fieldset>
           <legend>Plot groups</legend>
+          <details class="explain">
+            <summary>Explain plot groups and meta groups</summary>
+            <h3>What problem groups solve</h3>
+            <p>
+              Every 9 to 10 seconds the network announces a signage point (64 per 10 minute sub
+              slot, 9,216 a day). For each one, every plot runs a quick filter, and only plots that
+              pass have to be read from disk. At strength 2 a plot passes about 1 time in 512.
+            </p>
+            <p>
+              With no groups, every plot passes at its own random times. A 4 TB drive holds about
+              4,000 k28 plots, so on average about 8 of them pass at every signage point. The drive
+              is read every few seconds, all day, and can never spin down.
+            </p>
+            <p>
+              A <b>plot group</b> is a set of plots that share one plot key. The filter is decided
+              for the group as a whole, so all of its plots pass together, at the same signage
+              points, and at the same rate as a single plot. Put one group on a drive and the drive
+              only has to be read when that group passes. Grouping does not change expected
+              rewards: each plot still passes as often as before, the passes just happen together.
+            </p>
+            <h3>How often a group passes</h3>
+            <table class="mini">
+              <thead><tr><th>Strength</th><th>Passes per signage point</th><th>Wakeups per day</th></tr></thead>
+              <tbody>
+                <tr><td>2</td><td>1 in 512</td><td>about 18</td></tr>
+                <tr><td>3</td><td>1 in 1,024</td><td>about 9</td></tr>
+                <tr><td>4</td><td>1 in 2,048</td><td>about 4.5</td></tr>
+                <tr><td>5</td><td>1 in 4,096</td><td>about 2.3</td></tr>
+                <tr><td>6 and up</td><td>1 in 8,192 (current cap)</td><td>about 1.1</td></tr>
+              </tbody>
+            </table>
+            <p>
+              These are today's rates. Chia plans to lower the base filter over the years, which
+              makes every strength pass more often, so higher strengths keep drives quieter for
+              longer. Higher strength costs plotting time (strength 6 took about 3.5 times as long
+              as strength 2 in our tests) and makes each proof slower to solve, so check your
+              hardware with Validate plots before committing a lot of plots to a high strength.
+            </p>
+            <h3>What the meta group is</h3>
+            <p>
+              Signage points are grouped into windows of 16, and a group passes at most once per
+              window. The <b>meta group</b> is a number from 0 to 255 stored in each plot that
+              shifts <i>when</i> a group passes, but only compared with other groups that share the same
+              plot key:
+            </p>
+            <ul>
+              <li>Meta groups 16 or more apart (0, 16, 32, …) never pass in the same window.</li>
+              <li>Meta groups that differ only by 1 to 15 pass in the same windows, at different signage points.</li>
+              <li>Groups with different plot keys pass at unrelated times, so their meta groups do not matter.</li>
+            </ul>
+            <p>
+              That is what the staggered option uses: up to 16 groups (16 drives) share one plot
+              key and get meta groups 0, 16, 32, …, so no two of those drives are ever needed in the
+              same window.
+            </p>
+            <h3>Example setups</h3>
+            <dl>
+              <dt>One 4 TB drive that should sleep</dt>
+              <dd>New groups, independent, 4,000 plots per group (the whole drive is one group),
+                strength 4 to 6. The drive is needed about 1 to 5 times a day.</dd>
+              <dt>Several drives on one USB hub or a weak power supply</dt>
+              <dd>New groups, staggered, plots per group set to one drive's worth (4,000 for 4 TB),
+                one group per drive, and turn on group subfolders so each group lands in its own
+                folder. No two of the drives (up to 16) are needed in the same window, so at most one
+                has to be awake at a time.</dd>
+              <dt>A drive that is half full of a group</dt>
+              <dd>Add to an existing group, choose that drive's group folder, and the new plots
+                continue at the next free index.</dd>
+              <dt>An always on NAS or SSDs</dt>
+              <dd>No groups. Sleeping is not a goal, and this is the same
+                as <code>chia plots create2</code>.</dd>
+            </dl>
+            <p>
+              Pass times are also predictable: the filter for a window uses a challenge from a sub
+              slot that has already finished, so a harvester can know a few minutes ahead when a
+              group will be needed. Whether a drive actually sleeps depends on its own power
+              settings and on the harvester, which this page does not control.
+            </p>
+          </details>
           <label class="inline"><input type="radio" name="groupKeys" value="none" checked /> No groups: every plot has its own key and passes the filter on its own, like <code>chia plots create2</code></label>
           <label class="inline"><input type="radio" name="groupKeys" value="separate" /> New groups, independent: each group gets its own plot key</label>
           <label class="inline"><input type="radio" name="groupKeys" value="shared" /> New groups, staggered: groups share one plot key, meta groups step by 16</label>
@@ -104,12 +183,8 @@ import "../styles/app.css";
             <small>Plots in a group pass the filter as a unit, at the same signage points, so a drive holding one group only has to wake when that group passes. A typical choice is the number of plots that fit on one drive.</small>
           </label>
           <p class="hint">
-            The filter is checked in windows of 16 signage points, and a group passes at most
-            once per window. With independent keys, two drives sometimes wake in the same window
-            by chance. With staggered groups, up to 16 groups share a key and get meta groups 16
-            apart (0, 16, 32, …), which guarantees no two of them ever pass in the same window, so
-            at most one drive is awake at a time. After 16 groups a new key starts. The farmer
-            and pool keys are the same either way.
+            Staggered groups share one plot key and get meta groups 16 apart, so no two of them
+            (up to 16) are needed in the same window. Explain above has worked examples.
           </p>
           <label>
             Meta group of the first group
