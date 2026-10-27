@@ -36,6 +36,8 @@ export interface Timings {
   gpuMs: number;
   // What ran g(x): the GPU adapter, or why the CPU was used.
   gpuNote: string;
+  // [table][phase] ms: tables Xs, T1, T2, T3; phases hash, sort, find pairs, post sort, misc.
+  phasesMs: number[][];
 }
 
 export type Phase = "loading" | "plotting" | "writing";

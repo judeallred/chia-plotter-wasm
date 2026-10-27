@@ -176,6 +176,7 @@ POS2W_EXPORT int32_t pos2w_start(uint8_t const* plot_id,
     // Start the task pool here, on the calling thread. In Emscripten, creating pthreads from
     // another pthread stalls, so the plot thread must never be the one to start the pool.
     pos2w::TaskPool::instance().threads();
+    pos2w::reset_phases();
     g_job = new Job();
     Job& j = *g_job;
     j.params = std::make_unique<ProofParams>(plot_id, k, strength, static_cast<uint8_t>(testnet));
@@ -362,3 +363,12 @@ POS2W_EXPORT int32_t pos2w_threads() { return static_cast<int32_t>(pos2w::TaskPo
 #define gpu_reset_total pos2w_gpu_reset_total
 #define gpu_cpu_g pos2w_gpu_cpu_g
 #include "gpu_exports.inc"
+
+// Milliseconds the last plot spent in one phase of one table. table is 0 (Xs) to 3, phase is
+// 0 hash, 1 sort, 2 find pairs, 3 post sort, 4 misc.
+POS2W_EXPORT double pos2w_phase_ms(int32_t table, int32_t phase)
+{
+    if (table < 0 || table > 3 || phase < 0 || phase >= pos2w::kNumPhases)
+        return 0;
+    return pos2w::g_phase_ms[table][phase].load();
+}

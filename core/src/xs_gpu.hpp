@@ -3,8 +3,9 @@
 // XsConstructor with an optional GPU path for the g(x) pass. The generated Plotter.hpp
 // uses this class in place of XsConstructor. Sorting and everything after it are unchanged.
 
-#include "TableConstructorGeneric.hpp"
+#include "plot/TableConstructorGeneric.hpp"
 #include "gpu_bridge.hpp"
+#include "phase_timings.hpp"
 
 namespace pos2w {
 
@@ -58,6 +59,8 @@ public:
         std::span<Xs_Candidate> sorted_span
             = radix_sort.sort(out_span, tmp_span, params_.get_k(), &scratch_mr);
         timings.sort_time_ms = timer.stop();
+        g_phase_ms[0][kHash] = timings.hash_time_ms;
+        g_phase_ms[0][kSort] = timings.sort_time_ms;
         return sorted_span;
     }
 

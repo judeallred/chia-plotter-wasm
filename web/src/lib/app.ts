@@ -244,7 +244,10 @@ export async function start() {
     const groupCell = tr.querySelector<HTMLElement>(".group")!;
     groupCell.textContent = `s${group.strength} ${group.groupId.slice(0, 8)} #${group.index + 1}/${group.size} m${group.metaGroup}`;
     groupCell.title = `Strength ${group.strength}\nPlot group ID ${group.groupId}\nPlot ${group.index + 1} of ${group.size} in this group (plot index ${group.index})\nMeta group ${group.metaGroup}`;
-    tr.title = `Xs ${fmtMs(t.tablesMs[0])}, T1 ${fmtMs(t.tablesMs[1])}, T2 ${fmtMs(t.tablesMs[2])}, T3 ${fmtMs(t.tablesMs[3])}`;
+    const phaseNames = ["hash", "sort", "pairs", "post sort", "misc"];
+    tr.title = ["Xs", "T1", "T2", "T3"]
+      .map((name, i) => `${name} ${fmtMs(t.tablesMs[i])}: ` + t.phasesMs[i].map((ms, p) => (ms ? `${phaseNames[p]} ${fmtMs(ms)}` : "")).filter(Boolean).join(", "))
+      .join("\n");
     const gpuCell = tr.querySelector<HTMLElement>(".gpu")!;
     gpuCell.textContent = t.gpuMs > 0 ? `GPU ${fmtMs(t.gpuMs)}` : "CPU";
     gpuCell.title = t.gpuNote;

@@ -31,7 +31,11 @@ endfunction()
 # Plotter.hpp: upstream copies the final proof fragments into PlotData instead of moving
 # them, which costs 2 GB of peak memory at k28 and decides whether k28 fits in a tab. Also
 # swap in the Xs constructor that can run g(x) on the GPU.
-file(READ ${POS2_DIR}/src/plot/Plotter.hpp plotter_src)
+# plot/ and solve/ are copied whole. Their headers include each other by relative path, so
+# a patched header is only used consistently if its neighbours come from gen/ too.
+file(COPY ${POS2_DIR}/src/plot ${POS2_DIR}/src/solve DESTINATION ${GEN_DIR})
+
+file(READ ${GEN_DIR}/plot/Plotter.hpp plotter_src)
 pos2w_edit(plotter_src
   "plot_data.t3_proof_fragments = t3_proof_fragments;"
   "plot_data.t3_proof_fragments = std::move(t3_proof_fragments);")
@@ -39,10 +43,23 @@ pos2w_edit(plotter_src "#include \"common/Timer.hpp\"" "#include \"common/Timer.
 pos2w_edit(plotter_src
   "XsConstructor xs_gen_ctor(proof_params_, sink);"
   "pos2w::GpuXsConstructor xs_gen_ctor(proof_params_, sink);")
+# Record each table's phase timings (hash, sort, find pairs, post sort) for the UI.
+foreach(t 1 2 3)
+  if(t EQUAL 3)
+    set(var t3_results)
+  else()
+    set(var t${t}_pairs)
+  endif()
+  pos2w_edit(plotter_src "auto ${var} = t${t}_ctor.construct(" "pos2w::PhaseRecorder t${t}_recorder(${t}, t${t}_ctor.timings);\n        auto ${var} = t${t}_ctor.construct(")
+endforeach()
+option(POS2W_DEV_TIMINGS "Print upstream's per phase plotter timings" OFF)
+if(POS2W_DEV_TIMINGS)
+  pos2w_edit(plotter_src "#define DEVELOPER_PERFORMANCE_TIMINGS 0" "#define DEVELOPER_PERFORMANCE_TIMINGS 1")
+endif()
 file(WRITE ${GEN_DIR}/plot/Plotter.hpp "${plotter_src}")
 
 # Solver.hpp: route the all-x g(x) bitmask pass through the GPU when one is attached.
-file(READ ${POS2_DIR}/src/solve/Solver.hpp solver_src)
+file(READ ${GEN_DIR}/solve/Solver.hpp solver_src)
 file(READ ${CMAKE_CURRENT_SOURCE_DIR}/src/solver_gpu_inject.inc solver_inject)
 pos2w_edit(solver_src "#include \"common/Timer.hpp\"" "#include \"common/Timer.hpp\"\n#include \"gpu_bridge.hpp\"")
 pos2w_edit(solver_src
@@ -55,11 +72,9 @@ set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
   ${CMAKE_CURRENT_SOURCE_DIR}/src/solver_gpu_inject.inc)
 
 add_library(pos2w_core INTERFACE)
-# Search order matters. gen/ and overrides/ shadow upstream files. src/plot and src/solve
-# come last so the generated headers can still find neighbours they include without a prefix.
+# Search order matters: gen/ and overrides/ shadow upstream files.
 target_include_directories(pos2w_core INTERFACE
-  ${GEN_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/overrides ${CMAKE_CURRENT_SOURCE_DIR}/src
-  ${POS2_DIR}/src ${POS2_DIR}/src/plot ${POS2_DIR}/src/solve)
+  ${GEN_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/overrides ${CMAKE_CURRENT_SOURCE_DIR}/src ${POS2_DIR}/src)
 target_link_libraries(pos2w_core INTERFACE fse)
 
 if(EMSCRIPTEN)

@@ -39,6 +39,7 @@ interface Pos2Module {
   _pos2w_gpu_enabled(): number;
   _pos2w_gpu_total_ms(): number;
   _pos2w_gpu_reset_total(): void;
+  _pos2w_phase_ms(table: number, phase: number): number;
 }
 
 const Status = { running: 1, plotted: 2, cancelled: -2, error: -1 } as const;
@@ -251,13 +252,14 @@ async function runPlot(job: PlotJob) {
   }
   const t2 = performance.now();
   const tablesMs = [0, 1, 2, 3].map((t) => M._pos2w_timing_ms(t)) as [number, number, number, number];
+  const phasesMs = [0, 1, 2, 3].map((t) => [0, 1, 2, 3, 4].map((p) => M._pos2w_phase_ms(t, p)));
   M._pos2w_reset();
   post({
     type: "done",
     filename: job.filename,
     bytes,
     file,
-    timings: { totalMs: t2 - t0, plotMs: t1 - t0, writeMs: t2 - t1, tablesMs, gpuMs, gpuNote },
+    timings: { totalMs: t2 - t0, plotMs: t1 - t0, writeMs: t2 - t1, tablesMs, gpuMs, gpuNote, phasesMs },
   });
 }
 
