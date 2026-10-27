@@ -55,7 +55,7 @@ import "../styles/app.css";
           <label>
             Strength
             <input name="strength" type="number" min="2" max="17" value="2" />
-            <small>2 to 17. Each step halves how often the plot passes the filter, and consensus doubles its chance to win when it passes, so expected rewards are the same at any strength. Higher means fewer disk reads but slower plotting and proving. The filter caps at 1 in 8,192 today, reached at strength 6. Higher strengths only help after the <a href="https://github.com/Chia-Network/chips/pull/161" target="_blank" rel="noopener">scheduled</a> changes: base filter cuts (first one 6 years after the fork, then every 3 years) and later rises in the minimum strength, after which plots at the old minimum must be replotted.</small>
+            <small>2 to 17. Each step halves how often the plot passes the filter, and consensus doubles its chance to win when it passes, so expected rewards are the same at any strength.</small>
             <small id="read-rate" class="read-rate"></small>
           </label>
           <label>
@@ -156,22 +156,44 @@ import "../styles/app.css";
               key and get meta groups 0, 16, 32, …, so no two of those drives are needed in the same
               window, as long as the filter uses 8 or more bits.
             </p>
-            <h3>Example setups</h3>
+            <h3>How much a drive can serve at once</h3>
+            <p>
+              When a group passes, the harvester looks up proofs in every plot of the group at that
+              signage point. In this plot format each plot is its own file, and a lookup is about 4
+              random reads, one per challenge set. A hard drive does roughly 100 to 200 random
+              reads a second, so it can serve about 25 to 50 plots per signage point, and Chia warns
+              when a lookup takes longer than 8 seconds. A whole 4 TB drive as one group (about
+              4,000 plots, 16,000 reads at once) is too much. These are estimates for a typical
+              drive, not measurements.
+            </p>
+            <p>
+              CHIP-49's answer is to give each plot group on a drive its own meta group. With meta
+              groups 0 to 15 under one plot key, all 16 pass in the same window, so the drive wakes
+              as rarely as one group, but each passes at a different signage point, so a 4,000 plot
+              drive serves about 250 plots per signage point instead of 4,000. That is the hard
+              drive setup above. CHIP-48 also describes a future group file format that stores a
+              group's plots together so a pass costs a few reads for the whole group. That comes
+              with the upcoming group plotter, not this format.
+            </p>
+            <h3>Recommended setups</h3>
             <dl>
-              <dt>One 4 TB drive that should sleep</dt>
-              <dd>New groups, independent, 4,000 plots per group (the whole drive is one group),
-                strength 4 to 6. The drive is needed about 1 to 5 times a day.</dd>
-              <dt>Several drives on one USB hub or a weak power supply</dt>
-              <dd>New groups, staggered, plots per group set to one drive's worth (4,000 for 4 TB),
-                one group per drive, and turn on group subfolders so each group lands in its own
-                folder. No two of the drives (up to 16) are needed in the same window, so at most one
-                has to be awake at a time.</dd>
-              <dt>A drive that is half full of a group</dt>
-              <dd>Add to an existing group, choose that drive's group folder, and the new plots
-                continue at the next free index.</dd>
-              <dt>An always on NAS or SSDs</dt>
-              <dd>No groups. Sleeping is not a goal, and this is the same
-                as <code>chia plots create2</code>.</dd>
+              <dt>SSDs, a NAS, or anything that never sleeps</dt>
+              <dd>No groups. Each plot passes on its own and an SSD handles the reads easily. This
+                is the same as <code>chia plots create2</code>.</dd>
+              <dt>A 4 TB hard drive that should sleep</dt>
+              <dd>Hard drive that sleeps, 16 meta groups, strength 6. The drive is needed about once
+                a day for one window of about 2.5 minutes, serving about 250 plots at each of 16
+                signage points. At strength 4 it is about 4.5 times a day.</dd>
+              <dt>Several hard drives</dt>
+              <dd>Plot each drive with Hard drive that sleeps and Start a new drive, so every drive
+                has its own plot key. Drives then wake independently of each other.</dd>
+              <dt>A drive you already started</dt>
+              <dd>Hard drive that sleeps, Add to a drive I already plotted, and choose the drive's
+                plot folder. New plots continue the same key and fill the meta groups evenly.</dd>
+              <dt>Bigger than 4 TB</dt>
+              <dd>About 250 plots per meta group per signage point is already near what a hard drive
+                can serve, so for much larger drives use more meta groups (32 for 8 TB). The drive
+                then wakes for two windows instead of one.</dd>
             </dl>
             <p>
               Pass times are also predictable: the filter for a window uses a challenge from a sub
@@ -180,7 +202,39 @@ import "../styles/app.css";
               settings and on the harvester, which this page does not control.
             </p>
           </details>
-          <label class="inline"><input type="radio" name="groupKeys" value="none" checked /> No groups: every plot has its own key and passes the filter on its own, like <code>chia plots create2</code></label>
+          <p class="option-heading">Recommended</p>
+          <label class="inline"><input type="radio" name="groupKeys" value="none" checked /> <span><b>SSD or always on storage:</b> no groups. Every plot has its own key and passes the filter on its own, like <code>chia plots create2</code>.</span></label>
+          <label class="inline"><input type="radio" name="groupKeys" value="drive" /> <span><b>Hard drive that sleeps:</b> one plot key per drive, with its plots spread over meta groups 0 to 15, as CHIP-49 recommends. The drive wakes about as often as a single group but serves 1/16 of its plots at each of 16 signage points.</span></label>
+          <div id="drive-panel" class="subpanel" data-group-modes="drive">
+            <label class="inline"><input type="radio" name="driveStart" value="new" checked /> Start a new drive (new plot key)</label>
+            <label class="inline"><input type="radio" name="driveStart" value="continue" /> Add to a drive I already plotted</label>
+            <div id="drive-continue" hidden>
+              <div class="actions">
+                <button type="button" id="drive-dir" class="secondary">Choose the drive's plot folder…</button>
+                <label class="button secondary">Choose plots from it…<input id="drive-file" type="file" accept=".plot2" multiple hidden /></label>
+              </div>
+              <label id="drive-pick-label" hidden>
+                Plot key on this drive
+                <select id="drive-pick"></select>
+              </label>
+              <p class="hint">Choose the drive's whole plot folder (subfolders are searched) so the page sees every plot. New plots start above the highest plot index it finds, so picking only some files is still safe as long as the newest plots are among them.</p>
+              <p id="drive-info" class="hint"></p>
+            </div>
+            <div class="row">
+              <label>
+                Meta groups per drive
+                <input name="driveMetas" type="number" min="1" max="256" value="16" />
+                <small>16 is one block: all of them pass in the same window, one per signage point. More than 16 spans several blocks, which spreads the load further but wakes the drive more often.</small>
+              </label>
+              <label>
+                Plots on the drive when full
+                <input name="drivePlots" type="number" min="1" value="4000" />
+                <small>Only used to estimate load. A 4 TB drive holds about 4,000 k28 plots.</small>
+              </label>
+            </div>
+            <p id="drive-rate" class="group-rate"></p>
+          </div>
+          <p class="option-heading">Custom</p>
           <label class="inline"><input type="radio" name="groupKeys" value="separate" /> New groups, independent: each group gets its own plot key</label>
           <label class="inline"><input type="radio" name="groupKeys" value="shared" /> New groups, staggered: groups share one plot key, meta groups step by 16</label>
           <label class="inline"><input type="radio" name="groupKeys" value="continue" /> Add to an existing group</label>
@@ -257,9 +311,9 @@ import "../styles/app.css";
             Use <b>New Folder</b> in the picker to make one. Then tell your harvester about it
             with <code>chia plots add -d &lt;folder&gt;</code>.
           </p>
-          <label class="inline" data-group-modes="separate shared continue">
+          <label class="inline" data-group-modes="drive separate shared continue">
             <input type="checkbox" name="groupFolders" />
-            Put each plot group in its own subfolder, <code>group-&lt;group id&gt;-m&lt;meta group&gt;</code>
+            Put plots in a subfolder per drive (<code>drive-&lt;key id&gt;</code>) or per group (<code>group-&lt;group id&gt;-m&lt;meta group&gt;</code>)
           </label>
         </fieldset>
 

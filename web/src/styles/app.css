@@ -327,3 +327,20 @@ table.mini {
   width: auto;
   font-size: 0.85rem;
 }
+
+.option-heading {
+  margin: 10px 0 2px;
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+}
+
+label.inline span {
+  line-height: 1.4;
+}
+
+label.inline input[type="radio"] {
+  align-self: flex-start;
+  margin-top: 4px;
+}

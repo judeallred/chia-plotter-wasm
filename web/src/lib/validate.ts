@@ -104,8 +104,15 @@ export class Validator {
           } else {
             const ok = m.found > 0 && m.valid === m.found;
             let detail = `${m.valid} of ${m.found} proofs valid over ${m.challenges} challenges (${m.network}, ${m.gpuNote || "CPU"})`;
-            if (m.found === 0) detail = `no proofs found in ${m.challenges} challenges`;
-            checks.push({ name: "Proofs", ok, detail });
+            // A plot finds about one proof per challenge, so a few challenges can find none by
+            // chance. Only treat that as a failure once enough challenges have run.
+            const fewChallenges = m.found === 0 && m.challenges < 30;
+            if (m.found === 0) {
+              detail = fewChallenges
+                ? `no proofs in ${m.challenges} challenges, which can happen by chance. Check again with 30 or more.`
+                : `no proofs found in ${m.challenges} challenges`;
+            }
+            checks.push({ name: "Proofs", ok, warn: fewChallenges, detail });
           }
           resolve({
             file: file.name,

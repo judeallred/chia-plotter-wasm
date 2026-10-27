@@ -24,7 +24,10 @@ interface Settings {
   groupSize: number;
   metaGroup: number;
   groupFolders: boolean;
-  groupKeys: "none" | "separate" | "shared" | "continue";
+  groupKeys: "none" | "drive" | "separate" | "shared" | "continue";
+  driveStart: "new" | "continue";
+  driveMetas: number;
+  drivePlots: number;
 }
 
 const $ = <T extends Element>(sel: string) => document.querySelector(sel) as T;
@@ -79,7 +82,10 @@ function readSettings(form: HTMLFormElement): Settings {
     groupSize: Number(s("groupSize")),
     metaGroup: Number(s("metaGroup")),
     groupFolders: f.get("groupFolders") === "on",
-    groupKeys: (["separate", "shared", "continue"] as const).find((v) => v === s("groupKeys")) ?? "none",
+    groupKeys: (["drive", "separate", "shared", "continue"] as const).find((v) => v === s("groupKeys")) ?? "none",
+    driveStart: s("driveStart") === "continue" ? "continue" : "new",
+    driveMetas: Number(s("driveMetas")),
+    drivePlots: Number(s("drivePlots")),
   };
 }
 
@@ -115,6 +121,7 @@ function validate(s: Settings, caps: ReturnType<typeof capabilities>, continuing
   if (!(Number.isInteger(s.groupSize) && s.groupSize >= 1 && s.groupSize <= 65535)) errors.form = "Plots per group must be 1 to 65535.";
   if (!(Number.isInteger(s.metaGroup) && s.metaGroup >= 0 && s.metaGroup <= 255)) errors.form = "Meta group must be 0 to 255.";
   if (!(s.count >= 0)) errors.form = "Number of plots cannot be negative.";
+  if (s.groupKeys === "drive" && !(Number.isInteger(s.driveMetas) && s.driveMetas >= 1 && s.driveMetas <= 256)) errors.form = "Meta groups per drive must be 1 to 256.";
   if (!caps.isolated) errors.form = "This page is not cross-origin isolated, so the plotter cannot run.";
   if (s.k > 26 && !caps.memory64) errors.form = "k28 needs WebAssembly memory64, which this browser lacks.";
   return errors;
@@ -169,6 +176,18 @@ interface ContinueGroup {
   farmerKey: string;
   pool: string;
   used: Set<number>;
+  plots: number;
+}
+
+// A drive in the hard drive layout: one plot key, plots spread over meta groups.
+interface DriveKey {
+  memo: Uint8Array;
+  strength: number;
+  groupId: string;
+  farmerKey: string;
+  pool: string;
+  // Per meta group: how many plots and the highest plot index seen.
+  metas: Map<number, { count: number; maxIndex: number }>;
   plots: number;
 }
 
@@ -238,7 +257,7 @@ export async function start() {
         ? `about ${perSp.toFixed(perSp < 10 ? 1 : 0)} of them to read at every signage point (every 9.4 s)`
         : `one of them to read about every ${Math.round(9.375 / perSp)} s`;
     readRate.textContent =
-      `Plot will wake about every ${everyText}, about ${perDay.toFixed(perDay < 10 ? 1 : 0)} times a day ` +
+      `Strength ${s.strength} plots will wake about every ${everyText}, about ${perDay.toFixed(perDay < 10 ? 1 : 0)} times a day ` +
       `(it passes 1 in ${(2 ** bits).toLocaleString()} signage points). A group wakes on the same schedule as one plot. ` +
       `A 4 TB drive of ${drivePlots.toLocaleString()} ungrouped plots has ${drive}.${capped}`;
   };
@@ -390,6 +409,94 @@ export async function start() {
     return { link, checkCell: tr.querySelector<HTMLElement>(".check")! };
   };
 
+  // Hard drive layout: an existing drive's key and meta group usage, when continuing.
+  let drive: DriveKey | null = null;
+  const driveInfo = $<HTMLElement>("#drive-info");
+  const drivePick = $<HTMLSelectElement>("#drive-pick");
+  const driveRate = $<HTMLElement>("#drive-rate");
+  const syncDrive = () => {
+    const s = readSettings(form);
+    $<HTMLElement>("#drive-continue").hidden = s.driveStart !== "continue";
+    const strength = s.driveStart === "continue" && drive ? drive.strength : s.strength;
+    const metas = Math.max(1, Math.min(256, s.driveMetas || 16));
+    const blocks = Math.ceil(metas / 16);
+    const bits = Math.min(9 + strength - 2, 13);
+    // Each block of 16 meta groups passes in the same windows; different blocks never share one.
+    const wakesPerDay = (9216 / 2 ** bits) * blocks;
+    const every = (24 * 60) / wakesPerDay;
+    const everyText = every >= 60 ? `${(every / 60).toFixed(1)} hours` : `${Math.round(every)} minutes`;
+    const perSp = Math.ceil((s.drivePlots || 4000) / metas);
+    const secs = (perSp * 4) / 150;
+    driveRate.classList.toggle("low", strength <= 3 || perSp > 300);
+    driveRate.textContent =
+      `At strength ${strength}, the drive wakes about every ${everyText} (${wakesPerDay.toFixed(wakesPerDay < 10 ? 1 : 0)} times a day) ` +
+      `for ${blocks === 1 ? "one window" : `${blocks} windows`} of about 2.5 minutes, serving about ${perSp} plots at each signage point ` +
+      `(about ${perSp * 4} random reads, roughly ${secs.toFixed(0)} s on a typical hard drive).` +
+      (perSp > 300 ? " That is a lot for one signage point, consider more meta groups." : "") +
+      (strength <= 3 ? " Strength 4 to 6 means far fewer wakeups." : "") +
+      (s.driveStart === "continue" && drive ? " Strength comes from the drive's existing plots." : "");
+  };
+  form.addEventListener("input", syncDrive);
+  form.addEventListener("change", syncDrive);
+  syncDrive();
+  const showDrive = () => {
+    if (!drive) {
+      driveInfo.textContent = "No drive chosen yet.";
+      return;
+    }
+    const used = [...drive.metas.entries()].sort((a, b) => a[0] - b[0]).map(([m, v]) => `${m}:${v.count}`).join(" ");
+    driveInfo.textContent =
+      `Plot key ${drive.groupId.slice(0, 16)}…, strength ${drive.strength}, ${drive.plots} plots found. ` +
+      `Plots per meta group: ${used || "none"}. Farmer ${drive.farmerKey.slice(0, 12)}…, pool ${drive.pool.slice(0, 16)}…`;
+  };
+  showDrive();
+  const loadDrive = async (files: { file: File }[]) => {
+    const keys = new Map<string, DriveKey>();
+    for (const { file } of files) {
+      const info = await readPlotInfo(file);
+      if (!info) continue;
+      const d = keys.get(info.groupId) ?? {
+        memo: info.memo, strength: info.strength, groupId: info.groupId, farmerKey: info.farmerKey,
+        pool: info.pool, metas: new Map(), plots: 0,
+      };
+      const m = d.metas.get(info.metaGroup) ?? { count: 0, maxIndex: -1 };
+      m.count++;
+      m.maxIndex = Math.max(m.maxIndex, info.index);
+      d.metas.set(info.metaGroup, m);
+      d.plots++;
+      keys.set(info.groupId, d);
+    }
+    const list = [...keys.values()].sort((a, b) => b.plots - a.plots);
+    drivePick.innerHTML = "";
+    list.forEach((d, i) => drivePick.add(new Option(`${d.groupId.slice(0, 16)}…, ${d.plots} plots`, String(i))));
+    $<HTMLElement>("#drive-pick-label").hidden = list.length < 2;
+    drivePick.onchange = () => {
+      drive = list[Number(drivePick.value)] ?? null;
+      showDrive();
+      syncDrive();
+    };
+    drive = list[0] ?? null;
+    if (!drive) driveInfo.textContent = "No readable plots found there.";
+    else showDrive();
+    syncDrive();
+  };
+  if (!caps.dirPicker) $<HTMLElement>("#drive-dir").hidden = true;
+  $<HTMLButtonElement>("#drive-dir").addEventListener("click", async () => {
+    try {
+      const d = await (window as unknown as { showDirectoryPicker(o: object): Promise<FileSystemDirectoryHandle> })
+        .showDirectoryPicker({ id: "plots", mode: "read" });
+      driveInfo.textContent = "Reading plots…";
+      await loadDrive(await walkPlots(d));
+    } catch {
+      // Picker closed.
+    }
+  });
+  const driveFile = $<HTMLInputElement>("#drive-file");
+  driveFile.addEventListener("change", async () => {
+    await loadDrive(Array.from(driveFile.files ?? [], (file) => ({ file })));
+    driveFile.value = "";
+  });
+
   let cont: ContinueGroup | null = null;
   const contPanel = $<HTMLElement>("#continue-panel");
   const contInfo = $<HTMLElement>("#cont-info");
@@ -472,9 +579,11 @@ export async function start() {
     ev.preventDefault();
     if (running) return;
     const s = readSettings(form);
-    const continuing = s.groupKeys === "continue";
+    const driveContinue = s.groupKeys === "drive" && s.driveStart === "continue";
+    const continuing = s.groupKeys === "continue" || driveContinue;
     const errors = validate(s, caps, continuing);
-    if (continuing && !cont) errors.form = "Choose the group to add to, or pick another plot group option.";
+    if (s.groupKeys === "continue" && !cont) errors.form = "Choose the group to add to, or pick another plot group option.";
+    if (driveContinue && !drive) errors.form = "Choose the drive's plot folder or one of its plots, or pick Start a new drive.";
     form.querySelectorAll<HTMLElement>(".err[data-for]").forEach((el) => {
       el.textContent = errors[el.dataset.for!] ?? "";
     });
@@ -523,7 +632,20 @@ export async function start() {
     const groupSize = s.groupKeys === "none" ? 1 : s.groupSize;
     const firstMeta = s.groupKeys === "none" ? 0 : s.metaGroup;
     let seed = new Uint8Array(32);
-    const group0 = continuing ? cont : null;
+    const group0 = s.groupKeys === "continue" ? cont : null;
+    // Hard drive layout state: the drive's key and how full each meta group is.
+    const driveMode = s.groupKeys === "drive";
+    const driveMetas = Math.max(1, Math.min(256, s.driveMetas || 16));
+    const driveState: DriveKey | null = driveMode
+      ? driveContinue && drive
+        ? drive
+        : { memo: new Uint8Array(), strength: s.strength, groupId: "", farmerKey: s.farmerKey, pool: "", metas: new Map(), plots: 0 }
+      : null;
+    const driveSeed = driveMode && !driveContinue ? crypto.getRandomValues(new Uint8Array(32)) : null;
+    // When continuing, start every meta group above the highest index seen on the drive. If
+    // only some of the drive's plots were chosen, a meta group may have plots the page cannot
+    // see, and indexes are plentiful, so skipping ahead is the safe choice.
+    const driveIndexFloor = driveContinue && drive ? Math.max(-1, ...[...drive.metas.values()].map((m) => m.maxIndex)) : -1;
     let nextIndex = Math.max(0, Number(contStart.value) || 0);
     for (let i = 0; s.count === 0 || i < s.count; i++) {
       if (stopAfterCurrent) break;
@@ -531,7 +653,28 @@ export async function start() {
       let metaGroup: number;
       let strength = s.strength;
       let d;
-      if (group0) {
+      if (driveState) {
+        // Fill the emptiest meta group first, so groups stay even as the drive fills.
+        let best = 0;
+        for (let m = 1; m < driveMetas; m++) {
+          if ((driveState.metas.get(m)?.count ?? 0) < (driveState.metas.get(best)?.count ?? 0)) best = m;
+        }
+        const slot = driveState.metas.get(best) ?? { count: 0, maxIndex: -1 };
+        if (slot.maxIndex >= 65535) {
+          statusText.textContent = "This drive's meta groups have no free plot indexes left.";
+          break;
+        }
+        plotIndex = Math.max(slot.maxIndex, driveIndexFloor) + 1;
+        metaGroup = best;
+        strength = driveState.strength;
+        d = driveSeed
+          ? derive(driveSeed, s.farmerKey, s.poolMode === "pk" ? s.poolKey : "", s.poolMode === "contract" ? s.poolAddress : "", strength, plotIndex, metaGroup)
+          : derive_from_memo(driveState.memo, strength, plotIndex, metaGroup);
+        slot.count++;
+        slot.maxIndex = plotIndex;
+        driveState.metas.set(best, slot);
+        driveState.plots++;
+      } else if (group0) {
         // Next index not already in the group.
         while (group0.used.has(nextIndex)) nextIndex++;
         if (nextIndex > 65535) {
@@ -555,11 +698,13 @@ export async function start() {
         d = derive(seed, s.farmerKey, s.poolMode === "pk" ? s.poolKey : "", s.poolMode === "contract" ? s.poolAddress : "", strength, plotIndex, metaGroup);
       }
       const filename = `plot-k${s.k}-${d.plot_id_hex}.plot2`;
-      const group = { strength, groupId: d.plot_group_id_hex, index: plotIndex, size: group0 ? 0 : groupSize, metaGroup };
+      const group = { strength, groupId: d.plot_group_id_hex, index: plotIndex, size: group0 || driveState ? 0 : groupSize, metaGroup };
       let plotSink: Sink = sink;
       if (sink.kind === "dir" && s.groupFolders && s.groupKeys !== "none") {
-        // Staggered groups share a group ID, so the meta group is part of the folder name.
-        plotSink = { kind: "dir", dir: await sink.dir.getDirectoryHandle(`group-${d.plot_group_id_hex.slice(0, 16)}-m${metaGroup}`, { create: true }) };
+        // Staggered groups share a group ID, so the meta group is part of the folder name. In
+        // the hard drive layout the whole drive is one key, so it gets one folder.
+        const folder = driveState ? `drive-${d.plot_group_id_hex.slice(0, 16)}` : `group-${d.plot_group_id_hex.slice(0, 16)}-m${metaGroup}`;
+        plotSink = { kind: "dir", dir: await sink.dir.getDirectoryHandle(folder, { create: true }) };
       }
       const job: PlotJob = {
         k: s.k, strength, plotIndex, metaGroup, plotId: d.plot_id, memo: d.memo,
@@ -580,7 +725,7 @@ export async function start() {
         if (file) {
           checkCell.textContent = "queued";
           checked = validator
-            .check(file, { challenges: s.autoChecks, network: s.network, expectFarmerKey: group0?.farmerKey ?? s.farmerKey, gpu: s.gpu }, (p) => {
+            .check(file, { challenges: s.autoChecks, network: s.network, expectFarmerKey: group0?.farmerKey ?? (driveContinue ? drive?.farmerKey : undefined) ?? s.farmerKey, gpu: s.gpu }, (p) => {
               checkCell.textContent = `${p.done}/${p.total}…`;
             })
             .then((r) => renderCheckCell(checkCell, r));
@@ -601,6 +746,7 @@ export async function start() {
     }
 
     seed.fill(0);
+    driveSeed?.fill(0);
     // WASM memory never shrinks, so drop the worker (and its multi GB heap) when idle.
     worker.terminate();
     worker = makeWorker();
@@ -630,8 +776,9 @@ export async function start() {
 
 function renderCheckCell(cell: HTMLElement, r: Report) {
   const proofs = r.checks.find((c) => c.name === "Proofs");
-  cell.innerHTML = r.ok ? `<span class="ok">✓</span> ` : `<span class="fail">✗</span> `;
-  cell.append(proofs?.detail.replace(/ over .*/, "") ?? "");
+  const warned = r.checks.some((c) => !c.ok && c.warn);
+  cell.innerHTML = !r.ok ? `<span class="fail">✗</span> ` : warned ? `<span class="warn">!</span> ` : `<span class="ok">✓</span> `;
+  cell.append(proofs?.detail.replace(/ over .*/, "").replace(/, which can happen.*/, " (chance, check again)") ?? "");
   cell.title = r.checks.map((c) => `${c.ok ? "✓" : c.warn ? "!" : "✗"} ${c.name}: ${c.detail}`).join("\n");
 }
 
