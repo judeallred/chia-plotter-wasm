@@ -1,9 +1,9 @@
-// Remembers the chosen output folder across visits. Directory handles can be stored in
-// IndexedDB, and the browser asks for permission again before the page can write.
+// Remembers each session's output folder. Directory handles can be stored in IndexedDB,
+// and the browser asks for permission again before the page can write.
 
 const DB = "pos2-plotter";
 const STORE = "handles";
-const KEY = "output-dir";
+const key = (session: string) => `output-dir:${session}`;
 
 function open(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
@@ -14,11 +14,11 @@ function open(): Promise<IDBDatabase> {
   });
 }
 
-export async function loadDir(): Promise<FileSystemDirectoryHandle | null> {
+export async function loadDir(session: string): Promise<FileSystemDirectoryHandle | null> {
   try {
     const db = await open();
     return await new Promise((resolve) => {
-      const req = db.transaction(STORE).objectStore(STORE).get(KEY);
+      const req = db.transaction(STORE).objectStore(STORE).get(key(session));
       req.onsuccess = () => resolve((req.result as FileSystemDirectoryHandle) ?? null);
       req.onerror = () => resolve(null);
     });
@@ -27,10 +27,10 @@ export async function loadDir(): Promise<FileSystemDirectoryHandle | null> {
   }
 }
 
-export async function saveDir(dir: FileSystemDirectoryHandle): Promise<void> {
+export async function saveDir(session: string, dir: FileSystemDirectoryHandle): Promise<void> {
   try {
     const db = await open();
-    db.transaction(STORE, "readwrite").objectStore(STORE).put(dir, KEY);
+    db.transaction(STORE, "readwrite").objectStore(STORE).put(dir, key(session));
   } catch {
     // Not remembering the folder is fine.
   }

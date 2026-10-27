@@ -3,10 +3,10 @@
 import initKeys, { check_address, check_public_key, derive, derive_from_memo, inspect_memo } from "./keys-pkg/plot_keys.js";
 import type { FromWorker, PlotJob, Sink, Timings } from "./protocol";
 import { loadDir, saveDir } from "./saved-dir";
+import { listSessions, saveSession, startSession } from "./sessions";
 import { startStats, type PlotStatsSource } from "./stats";
 import { Validator, type Report } from "./validate";
 
-const STORAGE_KEY = "pos2-plotter-settings";
 
 interface Settings {
   farmerKey: string;
@@ -191,6 +191,29 @@ interface DriveKey {
   plots: number;
 }
 
+// A short label for a session in the Recent sessions list.
+function summarize(s: Settings): string {
+  const mode: Record<Settings["groupKeys"], string> = {
+    none: "no groups",
+    drive: s.driveStart === "continue" ? "hard drive (continue)" : "hard drive",
+    separate: "independent groups",
+    shared: "staggered groups",
+    continue: "add to group",
+  };
+  const farmer = s.farmerKey ? `farmer ${s.farmerKey.slice(0, 8)}…` : "no farmer key";
+  const plots = s.count === 0 ? "until stopped" : `${s.count} plot${s.count === 1 ? "" : "s"}`;
+  return `k${s.k} · strength ${s.strength} · ${mode[s.groupKeys]} · ${plots} · ${farmer}`;
+}
+
+function fmtAgo(t: number): string {
+  const m = Math.round((Date.now() - t) / 60000);
+  if (m < 1) return "just now";
+  if (m < 60) return `${m} min ago`;
+  const h = Math.round(m / 60);
+  if (h < 24) return `${h} h ago`;
+  return new Date(t).toLocaleDateString();
+}
+
 function fmtBytes(n: number) {
   if (n >= 1e9) return `${(n / 1e9).toFixed(2)} GB`;
   if (n >= 1e6) return `${(n / 1e6).toFixed(1)} MB`;
@@ -222,13 +245,13 @@ export async function start() {
     threads: caps.threads,
     output: caps.dirPicker ? "dir" : "download",
   });
-  try {
-    const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) ?? "{}") as Record<string, unknown>;
-    // Settings store gpu as a boolean, the form uses "on" and "off". Default to the GPU.
+  // Settings store gpu as a boolean, the form uses "on" and "off". Default to the GPU.
+  const applySaved = (saved: Record<string, unknown>) =>
     applySettings(form, { ...saved, gpu: saved.gpu === false ? "off" : "on" });
-  } catch {
-    // Ignore bad saved settings.
-  }
+  // Settings used to be shared by all tabs under this key. Sessions replace it.
+  localStorage.removeItem("pos2-plotter-settings");
+  const session = await startSession();
+  if (session.settings) applySaved(session.settings);
   if (!caps.dirPicker) {
     form.querySelector<HTMLInputElement>('[name="output"][value="dir"]')!.disabled = true;
     applySettings(form, { output: "download" });
@@ -303,22 +326,67 @@ export async function start() {
   form.addEventListener("input", syncReadRate);
   form.addEventListener("input", syncGroupRate);
   form.addEventListener("change", syncGroupRate);
-  form.addEventListener("change", () => {
-    syncPoolMode();
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(readSettings(form)));
-  });
+  form.addEventListener("change", syncPoolMode);
 
-  let dir: FileSystemDirectoryHandle | null = caps.dirPicker ? await loadDir() : null;
+  // Keep this tab's session up to date, and offer other sessions to load.
+  const sessionPick = $<HTMLSelectElement>("#session-pick");
+  let saveTimer = 0;
+  const saveNow = () => saveSession(session.id, readSettings(form) as unknown as Record<string, unknown>, summarize(readSettings(form)));
+  const saveSoon = () => {
+    clearTimeout(saveTimer);
+    saveTimer = window.setTimeout(saveNow, 300);
+  };
+  form.addEventListener("input", saveSoon);
+  form.addEventListener("change", saveSoon);
+  window.addEventListener("pagehide", saveNow);
+  const fillSessions = () => {
+    const keep = sessionPick.options[0];
+    sessionPick.replaceChildren(keep);
+    for (const rec of listSessions()) {
+      if (rec.id === session.id) continue;
+      sessionPick.add(new Option(`${rec.summary} · ${fmtAgo(rec.updated)}`, rec.id));
+    }
+    sessionPick.disabled = sessionPick.options.length < 2;
+    if (sessionPick.disabled) keep.textContent = "No other sessions yet";
+    else keep.textContent = "Load settings from another tab or an earlier session…";
+  };
+  fillSessions();
+  sessionPick.addEventListener("focus", fillSessions);
+  sessionPick.addEventListener("pointerdown", fillSessions);
+  window.addEventListener("storage", fillSessions);
+
+  let dir: FileSystemDirectoryHandle | null = caps.dirPicker ? await loadDir(session.id) : null;
   const showDir = () => {
     $("#dir-name").textContent = dir ? `(${dir.name})` : "";
     pickBtn.textContent = dir ? "Change folder…" : "Choose folder…";
   };
   showDir();
+  sessionPick.addEventListener("change", async () => {
+    const id = sessionPick.value;
+    sessionPick.value = "";
+    const rec = listSessions().find((r) => r.id === id);
+    if (!rec) return;
+    applySaved(rec.settings);
+    // Rerun everything that reacts to the form, then save this tab's copy.
+    form.dispatchEvent(new Event("change"));
+    form.dispatchEvent(new Event("input"));
+    if (caps.dirPicker) {
+      const other = await loadDir(id);
+      if (other) {
+        dir = other;
+        await saveDir(session.id, other);
+        showDir();
+      }
+    }
+    saveNow();
+    statusCard.hidden = false;
+    statusText.textContent = `Loaded settings from: ${rec.summary}`;
+  });
   pickBtn.addEventListener("click", async () => {
     try {
       dir = await (window as unknown as { showDirectoryPicker(o: object): Promise<FileSystemDirectoryHandle> })
         .showDirectoryPicker({ id: "plots", mode: "readwrite", startIn: dir ?? "documents" });
-      await saveDir(dir);
+      await saveDir(session.id, dir);
       showDir();
       formError.textContent = "";
       applySettings(form, { output: "dir" });

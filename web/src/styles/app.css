@@ -344,3 +344,9 @@ label.inline input[type="radio"] {
   align-self: flex-start;
   margin-top: 4px;
 }
+
+.sessions {
+  border-bottom: 1px solid var(--line);
+  padding-bottom: 10px;
+  margin-bottom: 6px;
+}

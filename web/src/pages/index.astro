@@ -28,6 +28,14 @@ import "../styles/app.css";
       <form class="card" id="config">
         <h2>Plot settings</h2>
 
+        <div class="sessions">
+          <label>
+            Recent sessions
+            <select id="session-pick"><option value="">Load settings from another tab or an earlier session…</option></select>
+          </label>
+          <small>Each tab keeps its own settings, and they survive reloads. A new tab starts fresh. Pick a session to copy its settings into this tab.</small>
+        </div>
+
         <label>
           Farmer public key
           <input name="farmerKey" required autocomplete="off" spellcheck="false"
