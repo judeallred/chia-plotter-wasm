@@ -58,12 +58,7 @@ import "../styles/app.css";
           <label>
             Plots per group
             <input name="groupSize" type="number" min="1" max="65535" value="1" />
-            <small>Plots in a group share one plot key and pass the filter together, so a drive holding a group can sleep between passes. 1 gives every plot its own key, like <code>chia plots create2</code>.</small>
-          </label>
-          <label>
-            Meta group
-            <input name="metaGroup" type="number" min="0" max="255" value="0" />
-            <small>0 to 255. Shifts which signage point in each 16 point window the group passes on. Give drives different values to spread out their wakeups.</small>
+            <small>How many plots share one plot group. A group passes the filter as a unit, at the same signage points, so a drive holding one group only has to wake when that group passes. 1 means every plot passes on its own, like <code>chia plots create2</code>.</small>
           </label>
           <label>
             Size (k)
@@ -78,6 +73,25 @@ import "../styles/app.css";
             <small>Farming requires k28. Smaller sizes are for testing the pipeline.</small>
           </label>
         </div>
+
+        <fieldset>
+          <legend>Group wake schedule</legend>
+          <label class="inline"><input type="radio" name="groupKeys" value="separate" checked /> Independent: each group gets its own plot key</label>
+          <label class="inline"><input type="radio" name="groupKeys" value="shared" /> Staggered: groups share one plot key, meta groups step by 16</label>
+          <p class="hint">
+            The filter is checked in windows of 16 signage points, and a group passes at most
+            once per window. With independent keys, two drives sometimes wake in the same window
+            by chance. With staggered groups, up to 16 groups share a key and get meta groups 16
+            apart (0, 16, 32, …), which guarantees no two of them ever pass in the same window, so
+            at most one drive is awake at a time. After 16 groups a new key starts. The farmer
+            and pool keys are the same either way.
+          </p>
+          <label>
+            Meta group of the first group
+            <input name="metaGroup" type="number" min="0" max="255" value="0" />
+            <small>0 to 255, stored in each plot. It picks when a group passes, relative to other groups with the same plot key: values that differ by 16 or more never share a window, values that differ only in the last 4 bits (0 to 15) share windows but pass at different signage points. Between different keys it has no useful effect, so leave it at 0 for independent groups.</small>
+          </label>
+        </fieldset>
 
         <div class="row">
           <label>
@@ -112,7 +126,7 @@ import "../styles/app.css";
           </p>
           <label class="inline">
             <input type="checkbox" name="groupFolders" />
-            Put each plot group in its own subfolder, <code>group-&lt;group id&gt;</code>
+            Put each plot group in its own subfolder, <code>group-&lt;group id&gt;-m&lt;meta group&gt;</code>
           </label>
         </fieldset>
 

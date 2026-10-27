@@ -24,6 +24,7 @@ interface Settings {
   groupSize: number;
   metaGroup: number;
   groupFolders: boolean;
+  groupKeys: "separate" | "shared";
 }
 
 const $ = <T extends Element>(sel: string) => document.querySelector(sel) as T;
@@ -78,6 +79,7 @@ function readSettings(form: HTMLFormElement): Settings {
     groupSize: Number(s("groupSize")),
     metaGroup: Number(s("metaGroup")),
     groupFolders: f.get("groupFolders") === "on",
+    groupKeys: s("groupKeys") === "shared" ? "shared" : "separate",
   };
 }
 
@@ -316,24 +318,32 @@ export async function start() {
     wakeLock = await (navigator as unknown as { wakeLock?: { request(t: string): Promise<{ release(): Promise<void> }> } })
       .wakeLock?.request("screen").catch(() => null) ?? null;
 
-    // Plots in a group share the plot master key (one seed) and take indexes 0..groupSize-1.
+    // A plot group is plots with the same plot key (one seed) and meta group, with indexes
+    // 0..groupSize-1. Independent groups each get a new key. Staggered groups share a key
+    // and step the meta group by 16, so no two of them pass the filter in the same window;
+    // after 16 groups the meta groups would repeat, so a new key starts.
+    const groupsPerKey = s.groupKeys === "shared" ? 16 : 1;
     let seed = new Uint8Array(32);
     for (let i = 0; s.count === 0 || i < s.count; i++) {
       if (stopAfterCurrent) break;
       const plotIndex = i % s.groupSize;
-      if (plotIndex === 0) {
+      const groupNumber = Math.floor(i / s.groupSize);
+      const groupInKey = groupNumber % groupsPerKey;
+      if (plotIndex === 0 && groupInKey === 0) {
         seed.fill(0);
         seed = crypto.getRandomValues(new Uint8Array(32));
       }
-      const d = derive(seed, s.farmerKey, s.poolMode === "pk" ? s.poolKey : "", s.poolMode === "contract" ? s.poolAddress : "", s.strength, plotIndex, s.metaGroup);
+      const metaGroup = (s.metaGroup + 16 * groupInKey) % 256;
+      const d = derive(seed, s.farmerKey, s.poolMode === "pk" ? s.poolKey : "", s.poolMode === "contract" ? s.poolAddress : "", s.strength, plotIndex, metaGroup);
       const filename = `plot-k${s.k}-${d.plot_id_hex}.plot2`;
-      const group = { strength: s.strength, groupId: d.plot_group_id_hex, index: plotIndex, size: s.groupSize, metaGroup: s.metaGroup };
+      const group = { strength: s.strength, groupId: d.plot_group_id_hex, index: plotIndex, size: s.groupSize, metaGroup };
       let plotSink: Sink = sink;
       if (sink.kind === "dir" && s.groupFolders) {
-        plotSink = { kind: "dir", dir: await sink.dir.getDirectoryHandle(`group-${d.plot_group_id_hex.slice(0, 16)}`, { create: true }) };
+        // Staggered groups share a group ID, so the meta group is part of the folder name.
+        plotSink = { kind: "dir", dir: await sink.dir.getDirectoryHandle(`group-${d.plot_group_id_hex.slice(0, 16)}-m${metaGroup}`, { create: true }) };
       }
       const job: PlotJob = {
-        k: s.k, strength: s.strength, plotIndex, metaGroup: s.metaGroup, plotId: d.plot_id, memo: d.memo,
+        k: s.k, strength: s.strength, plotIndex, metaGroup, plotId: d.plot_id, memo: d.memo,
         testnet: s.network === "testnet", threads: s.threads, gpu: s.gpu, filename, sink: plotSink,
       };
       d.free();
