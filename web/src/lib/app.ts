@@ -315,6 +315,28 @@ export async function start() {
       (s.groupKeys === "continue" ? " Strength comes from the existing group." : "");
   };
 
+  // File size, peak plotter memory and plotting time measured in Chrome on an M4 Pro (14
+  // cores), CPU path. Shown under the size field.
+  const kInfo: Record<number, { file: string; memory: string; time: string }> = {
+    28: { file: "about 1 GB", memory: "about 11 GB", time: "about 2 minutes" },
+    26: { file: "about 230 MB", memory: "about 3 GB", time: "about 30 seconds" },
+    24: { file: "about 53 MB", memory: "about 0.7 GB", time: "about 7 seconds" },
+    22: { file: "about 12 MB", memory: "about 0.3 GB", time: "about 2 seconds" },
+    20: { file: "about 3 MB", memory: "under 0.1 GB", time: "under a second" },
+    18: { file: "about 0.6 MB", memory: "under 0.1 GB", time: "under a second" },
+  };
+  const kDetails = $<HTMLElement>("#k-details");
+  const syncK = () => {
+    const k = readSettings(form).k;
+    const i = kInfo[k];
+    kDetails.textContent = i
+      ? `Each k${k} plot is ${i.file} on disk, needs ${i.memory} of memory while plotting, and takes ${i.time} at strength 2 on a fast laptop.` +
+        (k >= 28 && !caps.memory64 ? " This browser lacks WebAssembly memory64, which k28 needs." : "")
+      : "";
+  };
+  syncK();
+  form.addEventListener("change", syncK);
+
   const syncPoolMode = () => {
     const mode = readSettings(form).poolMode;
     form.querySelectorAll<HTMLElement>("[data-mode]").forEach((el) => {
