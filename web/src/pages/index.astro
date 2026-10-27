@@ -345,6 +345,7 @@ import "../styles/app.css";
 
         <div class="actions">
           <button type="submit" id="start" class="btn">Start plotting</button>
+          <button type="button" id="pause" class="btn btn-secondary" disabled title="Holds the current plot in memory (about 11 GB at k28) until you resume. A paused plot does not survive closing or reloading the tab.">Pause</button>
           <button type="button" id="stop" class="btn btn-danger" disabled>Stop</button>
         </div>
         <p class="err" id="form-error"></p>
@@ -352,7 +353,7 @@ import "../styles/app.css";
 
       <section class="card" id="status" hidden>
         <h2>Current plot</h2>
-        <div class="h-2.5 overflow-hidden rounded bg-line"><div id="bar-fill" class="h-full w-0 bg-accent transition-[width] duration-200"></div></div>
+        <div id="bar" class="h-2.5 overflow-hidden rounded bg-line"><div id="bar-fill" class="h-full w-0 bg-accent transition-[width] duration-200"></div></div>
         <p id="status-text"></p>
       </section>
 
@@ -364,13 +365,28 @@ import "../styles/app.css";
       </section>
 
       <section class="card">
-        <h2>Finished plots</h2>
-        <table id="history">
-          <thead>
-            <tr><th>File</th><th>Size</th><th title="Strength, plot group ID, index in group, meta group. Plots with the same group ID pass the filter together.">Group</th><th>Plot</th><th>Write</th><th>Total</th><th>g(x)</th><th>Check</th><th></th></tr>
-          </thead>
-          <tbody></tbody>
-        </table>
+        <div class="mb-3 flex items-baseline justify-between gap-4">
+          <h2 class="mb-0">Finished plots</h2>
+          <small id="history-summary"></small>
+        </div>
+        <p id="history-empty" class="rounded-lg border border-dashed border-line px-4 py-6 text-center text-sm text-muted">
+          No plots yet. Each finished plot shows up here with its group, timing, and check result.
+        </p>
+        <div id="history-wrap" class="overflow-x-auto" hidden>
+          <table id="history" class="data">
+            <thead>
+              <tr>
+                <th>Plot</th>
+                <th title="Strength, plot group ID, plot index (and position in this batch), meta group. Plots with the same group ID pass the filter together.">Group</th>
+                <th class="num">Size</th>
+                <th class="num">Time</th>
+                <th>g(x)</th>
+                <th>Check</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
       </section>
       <section class="card" id="validate">
         <h2>Validate plots</h2>
@@ -400,7 +416,7 @@ import "../styles/app.css";
           <button type="button" id="v-dir" class="btn btn-secondary">Check a folder…</button>
           <small>Folders are searched recursively, including subfolders.</small>
         </div>
-        <table id="v-results">
+        <table id="v-results" class="data">
           <thead><tr><th>File</th><th>k</th><th>Strength</th><th>Group</th><th>Index</th><th>Meta</th><th>Proofs</th><th>Keys</th><th>Name</th><th>Farmer</th><th>Time</th><th>Result</th></tr></thead>
           <tbody></tbody>
         </table>

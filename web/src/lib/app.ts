@@ -234,10 +234,16 @@ export async function start() {
   const form = $<HTMLFormElement>("#config");
   const startBtn = $<HTMLButtonElement>("#start");
   const stopBtn = $<HTMLButtonElement>("#stop");
+  const pauseBtn = $<HTMLButtonElement>("#pause");
+  // Pause state for the current run. Paused time is left out of elapsed time and the ETA.
+  let paused = false;
+  let pausedSince = 0;
+  let pausedTotal = 0;
   const pickBtn = $<HTMLButtonElement>("#pick-dir");
   const statusCard = $<HTMLElement>("#status");
   const statusText = $<HTMLElement>("#status-text");
   const barFill = $<HTMLElement>("#bar-fill");
+  const bar = $<HTMLElement>("#bar");
   const formError = $<HTMLElement>("#form-error");
   const history = $<HTMLTableSectionElement>("#history tbody");
 
@@ -424,7 +430,7 @@ export async function start() {
 
   const makeWorker = () => new Worker(new URL("./plotter.worker.ts", import.meta.url), { type: "module" });
   let worker = makeWorker();
-  const statsSource: PlotStatsSource = { plotterHeapBytes: 0, peakHeapBytes: 0, finished: [] };
+  const statsSource: PlotStatsSource = { plotterHeapBytes: 0, peakHeapBytes: 0, finished: [], gpuHashes: 0, gpuMs: 0, lastGpuNote: "", lastUsedGpu: null };
   startStats($<HTMLElement>("#stats"), statsSource);
   const validator = new Validator();
   let running = false;
@@ -441,6 +447,7 @@ export async function start() {
   const runOne = (job: PlotJob) =>
     new Promise<{ ok: true; bytes: number; timings: Timings; file?: File } | { ok: false; reason: string }>((resolve) => {
       const started = performance.now();
+      pausedTotal = 0;
       // A crash (for example running out of memory) leaves the WASM module unusable, so
       // replace the worker before the next plot.
       worker.onerror = (e) => {
@@ -456,7 +463,10 @@ export async function start() {
             statsSource.plotterHeapBytes = m.heapBytes;
             statsSource.peakHeapBytes = Math.max(statsSource.peakHeapBytes, m.heapBytes);
           }
-          const elapsed = performance.now() - started;
+          // Once Stop is pressed the status stays on "Stopping…" until the run ends, and while
+          // paused it stays on "Paused".
+          if (stopAfterCurrent || paused) return;
+          const elapsed = performance.now() - started - pausedTotal;
           const pct = (m.fraction * 100).toFixed(1);
           const eta = m.phase === "plotting" && m.fraction > 0.05 ? `, about ${fmtMs(elapsed / m.fraction - elapsed)} left` : "";
           barFill.style.width = `${100 * m.fraction}%`;
@@ -473,32 +483,57 @@ export async function start() {
     });
 
   interface GroupInfo { strength: number; groupId: string; index: number; size: number; metaGroup: number }
+  const historyEmpty = $<HTMLElement>("#history-empty");
+  const historyWrap = $<HTMLElement>("#history-wrap");
+  const historySummary = $<HTMLElement>("#history-summary");
+  let historyCount = 0;
+  let historyBytes = 0;
   const addHistory = (filename: string, bytes: number, t: Timings, group: GroupInfo, file?: File) => {
     let link: HTMLAnchorElement | null = null;
+    historyCount++;
+    historyBytes += bytes;
+    historyEmpty.hidden = true;
+    historyWrap.hidden = false;
+    historySummary.textContent = `${historyCount} plot${historyCount === 1 ? "" : "s"} · ${fmtBytes(historyBytes)}`;
+
     const tr = document.createElement("tr");
-    tr.innerHTML = `<td class="file"></td><td>${fmtBytes(bytes)}</td><td class="group"></td><td>${fmtMs(t.plotMs)}</td><td>${fmtMs(t.writeMs)}</td><td>${fmtMs(t.totalMs)}</td><td class="gpu"></td><td class="check">off</td><td></td>`;
-    tr.querySelector(".file")!.textContent = filename;
+    tr.innerHTML =
+      `<td class="file"><div class="name"></div><div class="mt-1 text-xs text-muted where"></div></td>` +
+      `<td class="group"></td><td class="num"></td>` +
+      `<td class="num"><div class="total"></div><div class="text-xs text-muted split"></div></td>` +
+      `<td class="gpu"></td><td class="check"><span class="pill pill-muted">not checked</span></td>`;
+    // Plot IDs are long, so show the start and end and keep the full name on hover.
+    const name = tr.querySelector<HTMLElement>(".name")!;
+    const m = filename.match(/^(plot-k\d+-)([0-9a-f]{64})(\.plot2)$/);
+    name.textContent = m ? `${m[1]}${m[2].slice(0, 8)}…${m[2].slice(-4)}${m[3]}` : filename;
+    name.title = filename;
+    tr.cells[2].textContent = fmtBytes(bytes);
+    tr.querySelector(".total")!.textContent = fmtMs(t.totalMs);
+    tr.querySelector(".split")!.textContent = `plot ${fmtMs(t.plotMs)} · write ${fmtMs(t.writeMs)}`;
+
     const groupCell = tr.querySelector<HTMLElement>(".group")!;
     const ofSize = group.size ? `/${group.size}` : "";
     groupCell.textContent = `s${group.strength} ${group.groupId.slice(0, 8)} #${group.index + 1}${ofSize} m${group.metaGroup}`;
     groupCell.title = `Strength ${group.strength}\nPlot group ID ${group.groupId}\nPlot index ${group.index}${group.size ? ` (plot ${group.index + 1} of ${group.size} in this batch)` : ", added to an existing group"}\nMeta group ${group.metaGroup}`;
     const phaseNames = ["hash", "sort", "pairs", "post sort", "misc"];
-    tr.title = ["Xs", "T1", "T2", "T3"]
-      .map((name, i) => `${name} ${fmtMs(t.tablesMs[i])}: ` + t.phasesMs[i].map((ms, p) => (ms ? `${phaseNames[p]} ${fmtMs(ms)}` : "")).filter(Boolean).join(", "))
+    tr.cells[3].title = ["Xs", "T1", "T2", "T3"]
+      .map((n, i) => `${n} ${fmtMs(t.tablesMs[i])}: ` + t.phasesMs[i].map((ms, p) => (ms ? `${phaseNames[p]} ${fmtMs(ms)}` : "")).filter(Boolean).join(", "))
       .join("\n");
     const gpuCell = tr.querySelector<HTMLElement>(".gpu")!;
-    gpuCell.textContent = t.gpuMs > 0 ? `GPU ${fmtMs(t.gpuMs)}` : "CPU";
-    gpuCell.title = t.gpuNote;
+    gpuCell.innerHTML = t.gpuMs > 0 ? `<span class="pill pill-ok">GPU</span>` : `<span class="pill pill-muted">CPU</span>`;
+    gpuCell.title = t.gpuMs > 0 ? `g(x) on ${t.gpuNote}, ${fmtMs(t.gpuMs)}` : t.gpuNote || "CPU";
+
+    const where = tr.querySelector<HTMLElement>(".where")!;
     if (file) {
       const a = document.createElement("a");
       a.href = URL.createObjectURL(file);
       a.download = filename;
-      a.textContent = "download";
-      tr.lastElementChild!.append(a);
+      a.textContent = "Download";
+      where.append(a);
       a.click();
       link = a;
     } else {
-      tr.lastElementChild!.textContent = "saved";
+      where.textContent = "Saved to folder";
     }
     history.prepend(tr);
     return { link, checkCell: tr.querySelector<HTMLElement>(".check")! };
@@ -712,9 +747,14 @@ export async function start() {
 
     running = true;
     stopAfterCurrent = false;
+    paused = false;
     startBtn.disabled = true;
     stopBtn.disabled = false;
+    pauseBtn.disabled = false;
+    pauseBtn.textContent = "Pause";
     statusCard.hidden = false;
+    bar.hidden = false;
+    barFill.style.width = "0%";
     wakeLock = await (navigator as unknown as { wakeLock?: { request(t: string): Promise<{ release(): Promise<void> }> } })
       .wakeLock?.request("screen").catch(() => null) ?? null;
 
@@ -808,19 +848,28 @@ export async function start() {
       const res = await runOne(job);
       if (!res.ok) {
         statusText.textContent = res.reason === "cancelled" ? "Stopped." : `Error: ${res.reason}`;
+        // A stopped or failed plot has no progress left to show.
+        bar.hidden = true;
         break;
       }
       statsSource.finished.push({ bytes: res.bytes, ms: res.timings.totalMs });
+      // The plotter's GPU work is the Xs pass: g(x) for all 2^k values of x.
+      statsSource.lastUsedGpu = res.timings.gpuMs > 0;
+      statsSource.lastGpuNote = res.timings.gpuNote;
+      if (res.timings.gpuMs > 0) {
+        statsSource.gpuHashes += 2 ** s.k;
+        statsSource.gpuMs += res.timings.gpuMs;
+      }
       const { link, checkCell } = addHistory(filename, res.bytes, res.timings, group, res.file);
       let checked: Promise<unknown> = Promise.resolve();
       if (s.autoChecks > 0) {
         // Read the plot back from where it was saved, so the check also covers the write.
         const file = res.file ?? (plotSink.kind === "dir" ? await plotSink.dir.getFileHandle(filename).then((h) => h.getFile()) : undefined);
         if (file) {
-          checkCell.textContent = "queued";
+          checkCell.innerHTML = `<span class="pill pill-muted">queued</span>`;
           checked = validator
             .check(file, { challenges: s.autoChecks, network: s.network, expectFarmerKey: group0?.farmerKey ?? (driveContinue ? drive?.farmerKey : undefined) ?? s.farmerKey, gpu: s.gpu }, (p) => {
-              checkCell.textContent = `${p.done}/${p.total}…`;
+              checkCell.innerHTML = `<span class="pill pill-muted">checking ${p.done}/${p.total}</span>`;
             })
             .then((r) => renderCheckCell(checkCell, r));
         }
@@ -831,7 +880,7 @@ export async function start() {
           await old.checked;
           await root.removeEntry(old.name).catch(() => {});
           URL.revokeObjectURL(old.link.href);
-          old.link.replaceWith("downloaded");
+          old.link.replaceWith("Downloaded");
         }
         opfsFiles.push({ name: filename, link, checked });
       }
@@ -846,13 +895,36 @@ export async function start() {
     worker = makeWorker();
     statsSource.plotterHeapBytes = 0;
     running = false;
+    paused = false;
     startBtn.disabled = false;
     stopBtn.disabled = true;
+    pauseBtn.disabled = true;
+    pauseBtn.textContent = "Pause";
     await wakeLock?.release().catch(() => {});
+  });
+
+  pauseBtn.addEventListener("click", () => {
+    paused = !paused;
+    worker.postMessage({ type: "pause", paused });
+    pauseBtn.textContent = paused ? "Resume" : "Pause";
+    if (paused) {
+      pausedSince = performance.now();
+      statusText.textContent = "Paused. The plot stays in memory until you resume.";
+    } else {
+      pausedTotal += performance.now() - pausedSince;
+      statusText.textContent = "Resuming…";
+    }
   });
 
   stopBtn.addEventListener("click", () => {
     stopAfterCurrent = true;
+    stopBtn.disabled = true;
+    pauseBtn.disabled = true;
+    // Stopping a paused plot needs it to wake up and see the cancel.
+    if (paused) {
+      paused = false;
+      worker.postMessage({ type: "pause", paused: false });
+    }
     worker.postMessage({ type: "cancel" });
     statusText.textContent = "Stopping…";
   });
@@ -871,8 +943,10 @@ export async function start() {
 function renderCheckCell(cell: HTMLElement, r: Report) {
   const proofs = r.checks.find((c) => c.name === "Proofs");
   const warned = r.checks.some((c) => !c.ok && c.warn);
-  cell.innerHTML = !r.ok ? `<span class="fail">✗</span> ` : warned ? `<span class="warn">!</span> ` : `<span class="ok">✓</span> `;
-  cell.append(proofs?.detail.replace(/ over .*/, "").replace(/, which can happen.*/, " (chance, check again)") ?? "");
+  const m = proofs?.detail.match(/^(\d+) of (\d+)/);
+  const label = m ? `${m[1]}/${m[2]} proofs` : proofs?.detail.startsWith("no proofs") ? "no proofs" : "failed";
+  const [cls, mark] = !r.ok ? ["pill-fail", "✗"] : warned ? ["pill-warn", "!"] : ["pill-ok", "✓"];
+  cell.innerHTML = `<span class="pill ${cls}">${mark} ${label}</span>`;
   cell.title = r.checks.map((c) => `${c.ok ? "✓" : c.warn ? "!" : "✗"} ${c.name}: ${c.detail}`).join("\n");
 }
 
@@ -888,7 +962,7 @@ function setupValidateSection(validator: Validator, settings: () => Settings, di
     const network = $<HTMLSelectElement>("#v-network").value as "auto" | "mainnet" | "testnet";
     for (const { file, path } of files) {
       const tr = document.createElement("tr");
-      tr.innerHTML = `<td class="file"></td>${"<td></td>".repeat(10)}<td>queued</td>`;
+      tr.innerHTML = `<td class="file"></td>${"<td></td>".repeat(10)}<td><span class="pill pill-muted">queued</span></td>`;
       tr.cells[0].textContent = path;
       tbody.prepend(tr);
       const cell = (i: number, html: string, title = "") => {
@@ -916,7 +990,8 @@ function setupValidateSection(validator: Validator, settings: () => Settings, di
           cell(8, mark(find("File name")), find("File name")?.detail ?? "");
           cell(9, mark(find("Farmer key")), [find("Farmer key")?.detail, r.farmerKey && `farmer ${r.farmerKey}`, r.pool && `pool ${r.pool}`].filter(Boolean).join("\n"));
           cell(10, `${(r.ms / 1000).toFixed(1)} s`);
-          cell(11, r.ok ? `<span class="ok">✓ valid</span>` : `<span class="fail">✗ failed</span>`,
+          const warned = r.checks.some((c) => !c.ok && c.warn);
+          cell(11, !r.ok ? `<span class="pill pill-fail">✗ failed</span>` : warned ? `<span class="pill pill-warn">! valid</span>` : `<span class="pill pill-ok">✓ valid</span>`,
             r.checks.map((c) => `${c.ok ? "✓" : c.warn ? "!" : "✗"} ${c.name}: ${c.detail}`).join("\n"));
         });
     }

@@ -24,7 +24,8 @@ export interface PlotJob {
 
 export type ToWorker =
   | { type: "plot"; job: PlotJob }
-  | { type: "cancel" };
+  | { type: "cancel" }
+  | { type: "pause"; paused: boolean };
 
 export interface Timings {
   totalMs: number;

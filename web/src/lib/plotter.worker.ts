@@ -28,6 +28,7 @@ interface Pos2Module {
   _pos2w_timing_ms(t: number): number;
   _pos2w_error(): number | bigint;
   _pos2w_cancel(): void;
+  _pos2w_pause(on: number): void;
   _pos2w_begin_write(): number;
   _pos2w_next_chunk(): number | bigint;
   _pos2w_chunk_len(): number;
@@ -64,6 +65,7 @@ function loadModule(variant: "32" | "64"): Promise<Pos2Module> {
 }
 
 let cancelRequested = false;
+let paused = false;
 // One GPU device per worker, created on first use. undefined means not tried yet.
 let gpu: GpuG | null | undefined;
 let current: Pos2Module | null = null;
@@ -117,6 +119,7 @@ async function openWriter(job: PlotJob): Promise<FileWriter> {
 
 async function runPlot(job: PlotJob) {
   cancelRequested = false;
+  paused = false;
   const t0 = performance.now();
   post({ type: "progress", phase: "loading", fraction: 0, table: 0, detail: "loading plotter" });
   const variant = job.k > 26 ? "64" : "32";
@@ -222,6 +225,8 @@ async function runPlot(job: PlotJob) {
     let pos = headerSize;
     for (let i = 0; ; i++) {
       if (cancelRequested) throw new DOMException("cancelled", "AbortError");
+      // The write loop runs here in JavaScript, so pausing it is just waiting.
+      while (paused && !cancelRequested) await sleep(100);
       const p = fromPtr(M._pos2w_next_chunk());
       if (!p) break;
       const len = M._pos2w_chunk_len();
@@ -268,6 +273,11 @@ self.onmessage = (ev: MessageEvent<ToWorker>) => {
   if (msg.type === "cancel") {
     cancelRequested = true;
     current?._pos2w_cancel();
+    return;
+  }
+  if (msg.type === "pause") {
+    paused = msg.paused;
+    current?._pos2w_pause(paused ? 1 : 0);
     return;
   }
   if (msg.type === "plot") {

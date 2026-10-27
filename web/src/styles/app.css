@@ -175,6 +175,33 @@
   td ul.checks {
     @apply m-0 list-disc pl-4 text-xs;
   }
+  table.data thead th {
+    @apply border-b border-line pb-2 text-xs font-medium tracking-wide text-muted uppercase;
+  }
+  table.data tbody tr {
+    @apply transition-colors hover:bg-page;
+  }
+  table.data td {
+    @apply py-2.5;
+  }
+  table.data .num {
+    @apply text-right whitespace-nowrap tabular-nums;
+  }
+  .pill {
+    @apply inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium whitespace-nowrap;
+  }
+  .pill-ok {
+    @apply bg-accent/15 text-accent;
+  }
+  .pill-fail {
+    @apply bg-danger/15 text-danger;
+  }
+  .pill-warn {
+    @apply bg-warn/15 text-warn;
+  }
+  .pill-muted {
+    @apply bg-line/60 text-muted;
+  }
   table.mini {
     @apply w-auto text-sm;
   }

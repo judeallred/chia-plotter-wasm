@@ -14,6 +14,22 @@ export interface PlotStatsSource {
   // Largest plotter heap seen this session. WASM memory only grows, so this is the high water mark.
   peakHeapBytes: number;
   finished: { bytes: number; ms: number }[];
+  // GPU work reported by finished plots: g(x) hashes computed and GPU time spent.
+  gpuHashes: number;
+  gpuMs: number;
+  // How the last plot computed g(x): the adapter, or why it used the CPU.
+  lastGpuNote: string;
+  lastUsedGpu: boolean | null;
+}
+
+function fmtCount(n: number) {
+  if (n >= 1e9) return `${(n / 1e9).toFixed(2)} billion`;
+  if (n >= 1e6) return `${(n / 1e6).toFixed(1)} million`;
+  return n.toLocaleString();
+}
+
+function fmtDuration(ms: number) {
+  return ms >= 1000 ? `${(ms / 1000).toFixed(1)} s` : `${Math.round(ms)} ms`;
 }
 
 function fmtBytes(n: number) {
@@ -25,7 +41,7 @@ function fmtBytes(n: number) {
 
 export function startStats(el: HTMLElement, source: PlotStatsSource) {
   const values = new Map<string, { text: string; bad?: boolean; title?: string }>();
-  const order = ["cpu", "pressure", "devmem", "plotter", "tab", "battery", "storage", "rate", "gpu"];
+  const order = ["cpu", "pressure", "devmem", "plotter", "tab", "battery", "storage", "rate", "gpu", "gpulimits", "gpuwork"];
 
   const render = () => {
     el.innerHTML = order
@@ -75,9 +91,30 @@ export function startStats(el: HTMLElement, source: PlotStatsSource) {
     });
   }
 
-  const gpu = (navigator as { gpu?: { requestAdapter(): Promise<{ info?: { vendor: string; architecture: string } } | null> } }).gpu;
-  gpu?.requestAdapter().then((a) => {
-    if (a?.info) set("gpu", `GPU ${a.info.vendor} ${a.info.architecture}`.trim());
+  // WebGPU exposes the adapter's identity, limits and features, not utilization,
+  // temperature or memory use.
+  type Adapter = {
+    info?: { vendor: string; architecture: string; device: string; description: string };
+    limits: { maxBufferSize: number; maxStorageBufferBindingSize: number };
+    features: Set<string>;
+    isFallbackAdapter?: boolean;
+  };
+  const gpu = (navigator as { gpu?: { requestAdapter(o?: object): Promise<Adapter | null> } }).gpu;
+  if (!gpu) set("gpu", "No WebGPU, plotting uses the CPU");
+  gpu?.requestAdapter({ powerPreference: "high-performance" }).then((a) => {
+    if (!a) {
+      set("gpu", "WebGPU present but no adapter, plotting uses the CPU", true);
+      return;
+    }
+    const name = [a.info?.vendor, a.info?.architecture, a.info?.device].filter(Boolean).join(" ") || "unknown adapter";
+    set("gpu", `GPU <b>${name}</b>${a.isFallbackAdapter ? " (software fallback)" : ""}`, false, a.info?.description || "");
+    const notable = ["shader-f16", "timestamp-query", "subgroups"].filter((f) => a.features.has(f));
+    set(
+      "gpulimits",
+      `GPU buffers up to <b>${fmtBytes(a.limits.maxBufferSize)}</b>` + (notable.length ? `, ${notable.join(", ")}` : ""),
+      false,
+      `Largest buffer ${fmtBytes(a.limits.maxBufferSize)}, largest storage binding ${fmtBytes(a.limits.maxStorageBufferBindingSize)}. Features: ${[...a.features].sort().join(", ")}`,
+    );
   }).catch(() => {});
 
   const tick = async () => {
@@ -93,6 +130,20 @@ export function startStats(el: HTMLElement, source: PlotStatsSource) {
     const est = await navigator.storage?.estimate?.().catch(() => undefined);
     if (est?.quota) {
       set("storage", `Browser storage ${fmtBytes(est.usage ?? 0)} of ${fmtBytes(est.quota)}`, false, "Used for downloads. Saving into a folder does not use it.");
+    }
+
+    if (source.lastUsedGpu !== null) {
+      if (source.gpuHashes > 0 && source.gpuMs > 0) {
+        const rate = source.gpuHashes / (source.gpuMs / 1000);
+        set(
+          "gpuwork",
+          `GPU g(x): <b>${fmtCount(source.gpuHashes)}</b> hashes in ${fmtDuration(source.gpuMs)}, about <b>${Math.round(rate / 1e6)} million/s</b>`,
+          false,
+          `Last plot: ${source.lastGpuNote}. Includes copying results back into the plotter.`,
+        );
+      } else {
+        set("gpuwork", `Last plot ran g(x) on the CPU: ${source.lastGpuNote || "GPU off"}`, !source.lastUsedGpu && source.lastGpuNote !== "GPU off in settings");
+      }
     }
 
     const f = source.finished;

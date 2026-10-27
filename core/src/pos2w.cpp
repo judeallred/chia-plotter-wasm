@@ -12,6 +12,7 @@
 // PlotFile::writeData from pos2-chip, which is what chia_rs 0.49 reads.
 
 #include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -67,12 +68,18 @@ public:
         if (e.kind == EventKind::Note && e.note_id == NoteId::LayoutTotalBytesAllocated) {
             layout_bytes_.store(e.u64_0, std::memory_order_relaxed);
         }
+        // Pausing holds the plot thread here, at its next progress event, until resumed or
+        // cancelled. Worker threads finish their current tasks and then sit idle.
+        while (pause_.load(std::memory_order_relaxed) && !cancel_.load(std::memory_order_relaxed)) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        }
         return !cancel_.load(std::memory_order_relaxed);
     }
 
     AtomicProgressSnapshot snapshot() const noexcept { return inner_.snapshot(); }
 
     std::atomic<bool> cancel_ { false };
+    std::atomic<bool> pause_ { false };
     std::atomic<uint64_t> table_ns_[4] {};
     std::atomic<uint64_t> alloc_ns_ { 0 };
     std::atomic<uint64_t> layout_bytes_ { 0 };
@@ -242,6 +249,13 @@ POS2W_EXPORT void pos2w_cancel()
 {
     if (g_job)
         g_job->sink.cancel_ = true;
+}
+
+// Pauses (1) or resumes (0) the running plot at its next progress event.
+POS2W_EXPORT void pos2w_pause(int32_t on)
+{
+    if (g_job)
+        g_job->sink.pause_ = on != 0;
 }
 
 // Splits the plot into chunks and returns the header size in bytes, or a negative error.
