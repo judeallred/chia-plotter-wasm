@@ -71,6 +71,14 @@ if(POS2W_DEV_TIMINGS)
 endif()
 file(WRITE ${GEN_DIR}/plot/Plotter.hpp "${plotter_src}")
 
+# PlotFile.hpp: let pos2w::GroupWriter (pos2w.cpp) stream a plot group file with the same
+# private helpers PlotGroupFile::writeData uses, so the bytes match without a copy of them.
+file(READ ${GEN_DIR}/plot/PlotFile.hpp plotfile_src)
+pos2w_edit(plotfile_src
+  "class PlotGroupFile {\npublic:"
+  "namespace pos2w { struct GroupWriter; }\n\nclass PlotGroupFile {\n    friend struct pos2w::GroupWriter;\n\npublic:")
+file(WRITE ${GEN_DIR}/plot/PlotFile.hpp "${plotfile_src}")
+
 # Solver.hpp: route the all-x g(x) bitmask pass through the GPU when one is attached.
 file(READ ${GEN_DIR}/solve/Solver.hpp solver_src)
 file(READ ${CMAKE_CURRENT_SOURCE_DIR}/src/solver_gpu_inject.inc solver_inject)

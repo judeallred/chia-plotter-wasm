@@ -15,7 +15,6 @@ export function setupValidateSection(validator: Validator, settings: () => Setti
 
   const run = (files: FoundPlot[]) => {
     const challenges = Math.max(1, Number($<HTMLInputElement>("#v-challenges").value) || 30);
-    const network = $<HTMLSelectElement>("#v-network").value as "auto" | "mainnet" | "testnet";
     for (const { file, path } of files) {
       const tr = document.createElement("tr");
       tr.innerHTML = `<td class="file"></td>${"<td></td>".repeat(10)}<td><span class="pill pill-muted">queued</span></td>`;
@@ -27,7 +26,7 @@ export function setupValidateSection(validator: Validator, settings: () => Setti
       };
       const s = settings();
       void validator
-        .check(file, { challenges, network, expectFarmerKey: s.farmerKey || undefined, gpu: s.gpu !== "off" }, (p) => {
+        .check(file, { challenges, network: s.network, expectFarmerKey: s.farmerKey || undefined, gpu: s.gpu !== "off" }, (p) => {
           cell(6, `${p.valid}/${p.found} <small>${p.done}/${p.total}</small>`);
         })
         .then((r) => {
@@ -36,7 +35,7 @@ export function setupValidateSection(validator: Validator, settings: () => Setti
           cell(1, h ? String(h.k) : "");
           cell(2, h ? String(h.strength) : "");
           cell(3, r.groupId ? `<code>${escapeHtml(r.groupId.slice(0, 8))}</code>` : "", r.groupId ?? "");
-          cell(4, h ? String(h.index) : "");
+          cell(4, h ? String(h.groupSize) : "");
           cell(5, h ? String(h.metaGroup) : "");
           const proofs = find("Proofs") ?? find("Header");
           cell(6, `${markHtml(proofs)} ${proofCount(proofs)}`, proofs?.detail ?? "");

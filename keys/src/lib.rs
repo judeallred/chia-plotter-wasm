@@ -109,12 +109,6 @@ impl Pool {
             Self::ContractPuzzleHash(ph) => ph.to_vec(),
         }
     }
-
-    /// Pool contract plots add a taproot key to the plot public key.
-    #[must_use]
-    pub const fn uses_taproot(&self) -> bool {
-        matches!(self, Self::ContractPuzzleHash(_))
-    }
 }
 
 /// The keys stored in a plot's memo: pool, farmer public key and the plot secret key.
@@ -175,7 +169,7 @@ impl Memo {
     #[must_use]
     pub fn plot_public_key(&self) -> G1Element {
         let local_pk = master_sk_to_local_sk(&self.plot_secret_key).public_key();
-        generate_plot_public_key(&local_pk, &self.farmer_public_key, self.pool.uses_taproot())
+        generate_plot_public_key(&local_pk, &self.farmer_public_key)
     }
 }
 
@@ -227,16 +221,15 @@ pub fn master_sk_to_local_sk(master: &SecretKey) -> SecretKey {
         .fold(master.clone(), |sk, &i| sk.derive_hardened(i))
 }
 
-/// `generate_plot_public_key` from `chia/types/blockchain_format/proof_of_space.py`.
+/// `generate_plot_public_key(local_pk, farmer_pk, is_v2=True)` from chia-blockchain.
+///
+/// Every v2 plot includes a taproot key, and the v2 taproot message leaves out the
+/// standalone local key (`generate_taproot_sk` in `proof_of_space.py`).
 #[must_use]
-pub fn generate_plot_public_key(local_pk: &G1Element, farmer_pk: &G1Element, include_taproot: bool) -> G1Element {
+pub fn generate_plot_public_key(local_pk: &G1Element, farmer_pk: &G1Element) -> G1Element {
     let sum = local_pk + farmer_pk;
-    if include_taproot {
-        let taproot_sk = SecretKey::from_seed(&sha256(&[&sum.to_bytes(), &local_pk.to_bytes(), &farmer_pk.to_bytes()]));
-        &sum + &taproot_sk.public_key()
-    } else {
-        sum
-    }
+    let taproot_sk = SecretKey::from_seed(&sha256(&[&sum.to_bytes(), &farmer_pk.to_bytes()]));
+    &sum + &taproot_sk.public_key()
 }
 
 /// The plot group ID. The v2 plot filter hashes this, not the plot ID, so every plot with
@@ -323,8 +316,8 @@ pub fn encode_address(puzzle_hash: &[u8; PUZZLE_HASH_LEN], prefix: &str) -> Resu
 
 #[cfg(test)]
 mod tests {
-    //! Expected values come from chia-blockchain's own functions
-    //! (`tools/derive_reference.py` and `compute_plot_group_id`).
+    //! Expected values come from chia-blockchain's own functions, through
+    //! `tools/derive_reference.py` (chia-blockchain main with `chia_rs` 0.55).
 
     use super::*;
 
@@ -350,7 +343,11 @@ mod tests {
         let info = derive_plot(&SEED, &farmer(), &Pool::ContractPuzzleHash([3; 32]), 2, 0, 0);
         assert_eq!(
             info.plot_id,
-            hex32("3d428cf511f012e7b2dc755c96d0268a49ce49751c7517bfe5ca716bbe3e2fcb")
+            hex32("117186d791a77e89fe90233d0e3061bffd47100ac9d3ebfba8b9d62ce1fd3750")
+        );
+        assert_eq!(
+            info.plot_group_id,
+            hex32("e62dd7b8bf42b010761429c233c10da4e393191915d6b9c63612521406dc35a9")
         );
         assert_eq!(hex::encode(&info.memo), format!("{}{FARMER}{PLOT_SK}", "03".repeat(32)));
     }
@@ -360,7 +357,11 @@ mod tests {
         let info = derive_plot(&SEED, &farmer(), &Pool::PublicKey(farmer()), 6, 0, 0);
         assert_eq!(
             info.plot_id,
-            hex32("a124d7421255851b9bee34e2d4e93f396b65b04914ec2f8823ad0686c1a84e21")
+            hex32("66ca4513c2c06109cb4f070fcd985852716629876e432ced91aa9dddaaef8ded")
+        );
+        assert_eq!(
+            info.plot_group_id,
+            hex32("6c545bccb4ff4531e541015d4c96fd015a1f695f0adaa0223f51ea0ebd592f7d")
         );
         assert_eq!(hex::encode(&info.memo), format!("{FARMER}{FARMER}{PLOT_SK}"));
     }
@@ -374,11 +375,11 @@ mod tests {
         assert_eq!(other.plot_group_id, first.plot_group_id);
         assert_eq!(
             other.plot_group_id,
-            hex32("8c1e90ef8e0fc23869caab4e3cc5d346242e0bfc1fc80898e76946f7380279df")
+            hex32("cebd67bbcc3522c24cef138a7178423b534a31ca4366659b57df244e8effde92")
         );
         assert_eq!(
             other.plot_id,
-            hex32("30fe389bbe502c202a209182861f47c29e28cdb3b4bc5f7ad5dce0a9ba263919")
+            hex32("e78dafbcee9b809adb92e132e6b90d615f980e9095cc2b6efbe2e4ebee0d4b07")
         );
     }
 

@@ -37,7 +37,7 @@ class Handler(BaseHTTPRequestHandler):
             self.reply(403)
             return
         length = self.headers.get("Content-Length")
-        if not name.endswith(".plot2") or length is None or not length.isdigit():
+        if not name.endswith(".gplot") or length is None or not length.isdigit():
             self.reply(400)
             return
         remaining = int(length)

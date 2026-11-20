@@ -49,7 +49,6 @@ export interface GParams {
   key1: Uint32Array; // 4 words
   key2: Uint32Array; // 4 words
   k: number;
-  xorConst: number;
 }
 
 // x values per fill_xs dispatch. 2^22 entries are 32 MB of output.
@@ -149,7 +148,7 @@ export class GpuG {
     u.set(p.key2, 4);
     const [gx] = this.dispatchSize(count);
     const kMask = p.k >= 32 ? 0xffffffff : (1 << p.k) - 1;
-    u.set([xStart, count, p.xorConst, kMask, shift, capacity, gx * WG, 0], 8);
+    u.set([xStart, count, kMask, shift, capacity, gx * WG, 0, 0], 8);
     const buf = this.device.createBuffer({ size: u.byteLength, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
     this.device.queue.writeBuffer(buf, 0, u);
     return buf;

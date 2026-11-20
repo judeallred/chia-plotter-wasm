@@ -31,17 +31,17 @@
 
 namespace pos2w {
 
-// Round keys for FeistelCipher::encrypt, split into the three k bit words each round uses.
-inline void feistel_round_keys(ProofParams const& params, uint32_t out[12])
+// Round keys for FeistelCipher::encrypt: per round, the three k bit words b, c and d that
+// FeistelCipher derives from the plot ID with SHA-256.
+inline void feistel_round_keys(PlotProofParams const& params, uint32_t out[12])
 {
-    std::size_t const k = params.get_k();
-    FeistelCipher cipher(params.get_plot_id_bytes(), k);
-    uint64_t const mask = (uint64_t(1) << k) - 1;
-    for (std::size_t r = 0; r < 4; ++r) {
-        uint64_t const key = cipher.get_round_key(r);
-        out[3 * r + 0] = static_cast<uint32_t>(key & mask);
-        out[3 * r + 1] = static_cast<uint32_t>((key >> k) & mask);
-        out[3 * r + 2] = static_cast<uint32_t>((key >> (2 * k)) & mask);
+    FeistelCipher const cipher(params.get_plot_id().bytes(), static_cast<uint32_t>(params.get_k()));
+    static_assert(FeistelCipher::ROUNDS == 4);
+    for (uint32_t r = 0; r < FeistelCipher::ROUNDS; ++r) {
+        FeistelCipher::RoundKey const& key = cipher.round_key_.round[r];
+        out[3 * r + 0] = key.b;
+        out[3 * r + 1] = key.c;
+        out[3 * r + 2] = key.d;
     }
 }
 
@@ -49,7 +49,7 @@ inline void feistel_round_keys(ProofParams const& params, uint32_t out[12])
 // untouched, when no GPU is attached or it fails, and the caller runs its CPU loop instead.
 // A template because Xs_Candidate is defined after this header is included.
 template <class XsCandidate>
-bool gpu_fill_xs(ProofParams const& params, std::span<XsCandidate> out)
+bool gpu_fill_xs(PlotProofParams const& params, std::span<XsCandidate> out)
 {
     static_assert(sizeof(XsCandidate) == 8 && offsetof(XsCandidate, match_info) == 0
             && offsetof(XsCandidate, x) == 4,
@@ -67,7 +67,7 @@ class GpuSection {
 
 public:
     GpuSection(Ctor& ctor,
-        ProofParams const& params,
+        PlotProofParams const& params,
         int table_id,
         std::span<C const> prev,
         uint64_t const* l_row,

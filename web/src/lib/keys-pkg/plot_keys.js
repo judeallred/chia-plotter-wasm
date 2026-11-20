@@ -31,7 +31,18 @@ export class DerivedPlot {
         return v1;
     }
     /**
-     * The plot group ID in hex. Plots with the same group ID pass the filter together.
+     * The plot group ID bytes, for the plotter and the plot group file header.
+     * @returns {Uint8Array}
+     */
+    get plot_group_id() {
+        const ret = wasm.derivedplot_plot_group_id(this.__wbg_ptr);
+        var v1 = getArrayU8FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
+        return v1;
+    }
+    /**
+     * The plot group ID in hex, for the file name. Plots with the same group ID pass the
+     * filter together.
      * @returns {string}
      */
     get plot_group_id_hex() {

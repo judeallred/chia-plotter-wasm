@@ -6,9 +6,10 @@ import { type GpuHost, type HostFn, type Pointer, fn, pointerFor, ptr } from "./
 import { PAIR_OUT_WORDS } from "./wgsl";
 
 export interface SelfTestParams {
+  // The plot's own ID (derived from its group ID, index and meta group), which keys the
+  // hashes.
   plotId: Uint8Array;
   k: number;
-  testnet: boolean;
   strength: number;
   // Also check table pair finding (the plotter's kernels).
   pairs: boolean;
@@ -23,7 +24,7 @@ const u32 = (v: Pointer) => Number(v) >>> 0;
 // values, including the top of the range, and with pairs set, pair finding for each table.
 // Returns false on any difference.
 export async function selfTest(gpu: GpuG, M: GpuHost, prefix: string, t: SelfTestParams): Promise<boolean> {
-  const { plotId, k, testnet, strength } = t;
+  const { plotId, k, strength } = t;
   const at = pointerFor(t.memory64);
   const malloc = M._malloc as HostFn;
   const free = M._free as HostFn;
@@ -31,7 +32,7 @@ export async function selfTest(gpu: GpuG, M: GpuHost, prefix: string, t: SelfTes
   new Uint8Array(M.wasmMemory.buffer).set(plotId, p);
   const words = new Uint32Array(plotId.slice(0, 32).buffer);
   const params: GParams = {
-    key1: words.slice(0, 4), key2: words.slice(4, 8), k, xorConst: testnet ? 0xa3b1c4d7 : 0,
+    key1: words.slice(0, 4), key2: words.slice(4, 8), k,
   };
   const cpuG = fn(M, prefix, "gpu_cpu_g");
   const numXs = 2 ** k;
@@ -40,7 +41,7 @@ export async function selfTest(gpu: GpuG, M: GpuHost, prefix: string, t: SelfTes
     for (const start of [0, Math.floor(numXs / 3), numXs - 2048]) {
       await gpu.fillXs(params, start, 2048, (_off, data) => {
         for (let i = 0; i < 2048 && ok; i += 3) {
-          const cpu = u32(cpuG(at(p), k, testnet ? 1 : 0, start + i));
+          const cpu = u32(cpuG(at(p), k, start + i));
           if (data[2 * i] !== cpu || data[2 * i + 1] !== start + i) ok = false;
         }
       });

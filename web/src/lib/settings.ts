@@ -61,7 +61,12 @@ export const K_SIZES: Record<number, { bytes: number; file: string; memory: stri
 export const drivePlotsOf = (s: Settings) => Math.max(1, Math.round(((s.driveTB > 0 ? s.driveTB : 4) * 1e12) / 1e9));
 export const fmtTB = (tb: number) => `${(tb > 0 ? tb : 4).toLocaleString(undefined, { maximumFractionDigits: 1 })} TB`;
 
-const GROUP_KEYS: readonly GroupKeys[] = ["none", "drive", "separate", "shared", "continue"];
+// The plot group options that can be chosen today. pos2-chip 1.0.1 only writes plot group
+// files of one plot, and its prover reads such a file as plot index 0, so a plot at any
+// other index cannot be farmed. Every mode that plots several indexes under one plot key
+// waits for an upstream writer of multi-plot group files. Their form options stay on the
+// page, disabled.
+export const AVAILABLE_GROUP_KEYS: readonly GroupKeys[] = ["none"];
 const GPU_MODES: readonly GpuMode[] = ["gpu", "hybrid", "off"];
 
 export function readSettings(form: HTMLFormElement): Settings {
@@ -85,7 +90,7 @@ export function readSettings(form: HTMLFormElement): Settings {
     groupSize: Number(s("groupSize")),
     metaGroup: Number(s("metaGroup")),
     groupFolders: f.get("groupFolders") === "on",
-    groupKeys: oneOf(s("groupKeys"), GROUP_KEYS, "none"),
+    groupKeys: oneOf(s("groupKeys"), AVAILABLE_GROUP_KEYS, "none"),
     driveStart: s("driveStart") === "continue" ? "continue" : "new",
     driveMetas: Number(s("driveMetas")),
     driveTB: Number(s("driveTB")),

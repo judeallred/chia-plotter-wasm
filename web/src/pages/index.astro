@@ -12,8 +12,9 @@ import "../styles/app.css";
     <header class="mx-auto max-w-[820px] px-4">
       <h1>Chia PoS2 Browser Plotter</h1>
       <p class="text-muted">
-        Proof of Space v2 plots (<code>.plot2</code>) made in your browser with WebAssembly.
-        Format matches <code>chia plots create2</code> (chia_rs 0.49, pos2-chip 0.6.0). Alpha.
+        Proof of Space v2 plot group files (<code>.gplot</code>) made in your browser with
+        WebAssembly. Byte for byte what <code>chia plots create2</code> writes (chia_rs 0.55,
+        pos2-chip 1.0.1). Alpha.
         Chia does not accept v2 proofs yet: they activate with a future hard fork, so these plots
         pass <code>chia plots check</code> but cannot win blocks until then.
       </p>
@@ -171,8 +172,8 @@ import "../styles/app.css";
             <h3>How much a drive can serve at once</h3>
             <p>
               When a group passes, the harvester looks up proofs in every plot of the group at that
-              signage point. In this plot format each plot is its own file, and a lookup is about 4
-              random reads, one per challenge set. A hard drive does roughly 100 to 200 random
+              signage point. Today each plot is its own file, and a lookup is about 4 random reads,
+              one per challenge set. A hard drive does roughly 100 to 200 random
               reads a second, so it can serve about 25 to 50 plots per signage point, and Chia warns
               when a lookup takes longer than 8 seconds. <span class="js-drive-one-group">A whole 4 TB drive as one group (about
               4,000 plots, 16,000 reads at once) is too much.</span> These are estimates for a typical
@@ -183,9 +184,9 @@ import "../styles/app.css";
               groups 0 to 15 under one plot key, all 16 pass in the same window, so the drive wakes
               as rarely as one group, but each passes at a different signage point, so a <span class="js-drive-plots">4,000</span> plot
               drive serves about <span class="js-drive-per-meta">250</span> plots per signage point instead of <span class="js-drive-plots">4,000</span>. That is the hard
-              drive setup above. CHIP-48 also describes a future group file format that stores a
-              group's plots together so a pass costs a few reads for the whole group. That comes
-              with the upcoming group plotter, not this format.
+              drive setup above. The <code>.gplot</code> group file format can also store a whole
+              group's plots together, so a pass costs a few reads for the whole group. pos2-chip
+              can already read such files, but so far it only writes groups of one plot.
             </p>
             <h3>Recommended setups</h3>
             <dl>
@@ -214,9 +215,16 @@ import "../styles/app.css";
               settings and on the harvester, which this page does not control.
             </p>
           </details>
+          <p class="hint" id="groups-waiting">
+            For now every plot is a group of one: its own plot key, plot index 0. pos2-chip 1.0.1
+            only writes plot group files of one plot, and its prover reads every such file as plot
+            index 0, so a plot at any other index would not farm. The other options below put
+            several plot indexes under one plot key, so they are disabled until pos2-chip (and
+            <code>chia plots create2</code>) can write multi-plot group files.
+          </p>
           <p class="option-heading">Recommended</p>
           <label class="option"><input type="radio" name="groupKeys" value="none" checked /> <span><b>SSD or always on storage:</b> no groups. Every plot has its own key and passes the filter on its own, like <code>chia plots create2</code>.</span></label>
-          <label class="option"><input type="radio" name="groupKeys" value="drive" /> <span><b>Hard drive that sleeps:</b> one plot key per drive, with its plots spread over meta groups 0 to 15, as CHIP-49 recommends. The drive wakes about as often as a single group but serves 1/16 of its plots at each of 16 signage points.</span></label>
+          <label class="option"><input type="radio" name="groupKeys" value="drive" disabled /> <span><b>Hard drive that sleeps:</b> one plot key per drive, with its plots spread over meta groups 0 to 15, as CHIP-49 recommends. The drive wakes about as often as a single group but serves 1/16 of its plots at each of 16 signage points.</span></label>
           <div class="subpanel" data-group-modes="drive">
             <label class="option"><input type="radio" name="driveStart" value="new" checked /> Start a new drive (new plot key)</label>
             <label class="option"><input type="radio" name="driveStart" value="continue" /> Add to a drive I already plotted</label>
@@ -224,7 +232,7 @@ import "../styles/app.css";
               <div class="actions">
                 <button type="button" id="drive-dir" class="btn btn-secondary">Choose the drive's plot folder…</button>
                 <button type="button" class="btn btn-secondary" data-opens="drive-file">Choose plots from it…</button>
-                <input id="drive-file" type="file" accept=".plot2" multiple hidden />
+                <input id="drive-file" type="file" accept=".gplot" multiple hidden />
               </div>
               <label id="drive-pick-label" hidden>
                 Plot key on this drive
@@ -241,9 +249,9 @@ import "../styles/app.css";
             <p id="drive-rate" class="group-rate"></p>
           </div>
           <p class="option-heading">Custom</p>
-          <label class="option"><input type="radio" name="groupKeys" value="separate" /> New groups, independent: each group gets its own plot key</label>
-          <label class="option"><input type="radio" name="groupKeys" value="shared" /> New groups, staggered: groups share one plot key, meta groups step by 16</label>
-          <label class="option"><input type="radio" name="groupKeys" value="continue" /> Add to an existing group</label>
+          <label class="option"><input type="radio" name="groupKeys" value="separate" disabled /> New groups, independent: each group gets its own plot key</label>
+          <label class="option"><input type="radio" name="groupKeys" value="shared" disabled /> New groups, staggered: groups share one plot key, meta groups step by 16</label>
+          <label class="option"><input type="radio" name="groupKeys" value="continue" disabled /> Add to an existing group</label>
           <p id="group-rate" class="group-rate" data-group-modes="separate shared continue"></p>
           <div id="continue-panel" class="subpanel" hidden>
             <p class="hint">
@@ -255,7 +263,7 @@ import "../styles/app.css";
             <div class="actions">
               <button type="button" id="cont-dir" class="btn btn-secondary">Choose the group's folder…</button>
               <button type="button" class="btn btn-secondary" data-opens="cont-file">Choose one plot…</button>
-              <input id="cont-file" type="file" accept=".plot2" hidden />
+              <input id="cont-file" type="file" accept=".gplot" hidden />
             </div>
             <label id="cont-pick-label" hidden>
               Group
@@ -301,8 +309,9 @@ import "../styles/app.css";
             Network
             <select name="network">
               <option value="mainnet" selected>mainnet</option>
-              <option value="testnet">testnet (testnet11)</option>
+              <option value="testnet">testnet</option>
             </select>
+            <small>Plots are the same on every network. This only picks the pool address prefix (xch or txch).</small>
           </label>
         </div>
 
@@ -390,9 +399,9 @@ import "../styles/app.css";
       <section class="card" id="validate">
         <h2>Validate plots</h2>
         <p class="hint">
-          Check existing <code>.plot2</code> files with the same steps as <code>chia plots check</code>:
+          Check existing <code>.gplot</code> files with the same steps as <code>chia plots check</code>:
           look up proofs for each challenge, solve them, and
-          validate them. Also checks that the keys in the plot produce its plot ID. Files are
+          validate them. Also checks that the keys in the plot produce its plot group ID. Files are
           read in place in your browser. Nothing is uploaded.
         </p>
         <div class="row">
@@ -401,23 +410,15 @@ import "../styles/app.css";
             <input id="v-challenges" type="number" min="1" max="1000" value="30" />
             <small>Same as <code>chia plots check -n</code>. Default 30.</small>
           </label>
-          <label>
-            Network
-            <select id="v-network">
-              <option value="auto" selected>auto detect</option>
-              <option value="mainnet">mainnet</option>
-              <option value="testnet">testnet</option>
-            </select>
-          </label>
         </div>
         <div class="actions">
           <button type="button" class="btn btn-secondary" data-opens="v-files">Choose plot files…</button>
-          <input id="v-files" type="file" accept=".plot2" multiple hidden />
+          <input id="v-files" type="file" accept=".gplot" multiple hidden />
           <button type="button" id="v-dir" class="btn btn-secondary">Check a folder…</button>
           <small>Folders are searched recursively, including subfolders.</small>
         </div>
         <table id="v-results" class="data">
-          <thead><tr><th>File</th><th>k</th><th>Strength</th><th>Group</th><th>Index</th><th>Meta</th><th>Proofs</th><th>Keys</th><th>Name</th><th>Farmer</th><th>Time</th><th>Result</th></tr></thead>
+          <thead><tr><th>File</th><th>k</th><th>Strength</th><th>Group</th><th>Plots</th><th>Meta</th><th>Proofs</th><th>Keys</th><th>Name</th><th>Farmer</th><th>Time</th><th>Result</th></tr></thead>
           <tbody></tbody>
         </table>
       </section>

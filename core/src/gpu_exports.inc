@@ -22,9 +22,9 @@ EXPORT_FN double GPU_FN(gpu_total_ms)() { return pos2w::gpu::g_total_ms.load(); 
 EXPORT_FN void GPU_FN(gpu_reset_total)() { pos2w::gpu::g_total_ms = 0; }
 
 // CPU reference for g(x), used to self test the GPU before trusting it.
-EXPORT_FN uint32_t GPU_FN(gpu_cpu_g)(uint8_t const* plot_id, int32_t k, int32_t testnet, uint32_t x)
+EXPORT_FN uint32_t GPU_FN(gpu_cpu_g)(uint8_t const* plot_id, int32_t k, uint32_t x)
 {
-    ProofParams params(plot_id, uint8_t(k), 2, uint8_t(testnet));
+    PlotProofParams const params = PlotProofParams::create_raw(PlotId(plot_id), uint8_t(k), 2);
     ProofCore core(params);
     return core.hashing.g(x);
 }

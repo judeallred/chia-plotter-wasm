@@ -5,7 +5,7 @@
 
 import { type GpuHost, type GpuWorkerState, attachGpu, ptr } from "./gpu";
 import { readPlotHeader } from "./plot-header";
-import type { FromValidator, Network, ValidateRequest } from "./protocol";
+import type { FromValidator, ValidateRequest } from "./protocol";
 
 declare const self: DedicatedWorkerGlobalScope;
 
@@ -22,7 +22,7 @@ interface Pos2v {
   UTF8ToString(p: number): string;
   stringToUTF8(s: string, p: number, max: number): void;
   lengthBytesUTF8(s: string): number;
-  _pos2v_start(path: number, plotId: number, k: number, strength: number, challenge: number, testnet: number): number;
+  _pos2v_start(path: number, plotGroupId: number, k: number, strength: number, metaGroup: number, challenge: number): number;
   _pos2v_status(): number;
   _pos2v_gpu_enable(on: number): void;
   _pos2v_found(): number;
@@ -51,6 +51,15 @@ async function challenge(i: number): Promise<Uint8Array> {
   return new Uint8Array(await crypto.subtle.digest("SHA-256", buf));
 }
 
+// The ID of the first plot in a group: sha256(group ID, plot index 0 as 2 big endian bytes,
+// meta group), as posCalculatePlotIdForIndex in pos2-chip does.
+async function firstPlotId(groupId: Uint8Array, metaGroup: number): Promise<Uint8Array> {
+  const buf = new Uint8Array(35);
+  buf.set(groupId);
+  buf[34] = metaGroup;
+  return new Uint8Array(await crypto.subtle.digest("SHA-256", buf));
+}
+
 let mountCount = 0;
 const gpuState: GpuWorkerState = {};
 const errorText = (e: unknown) => (e instanceof Error ? e.message : String(e));
@@ -69,44 +78,35 @@ async function validate(req: ValidateRequest) {
   const pPath = ptr(M._malloc(pathLen));
   M.stringToUTF8(pathStr, pPath, pathLen);
   const pId = ptr(M._malloc(32));
-  heap().set(header.plotId, pId);
+  heap().set(header.plotGroupId, pId);
   const pCh = ptr(M._malloc(32));
 
-  // The solver hashes every x for each proof, the main thing worth putting on the GPU.
-  // The self test uses mainnet parameters, it only checks the hash implementation.
+  // The solver hashes every x for each proof, the main thing worth putting on the GPU. The
+  // self test only checks the hash implementation, so the group's first plot ID will do.
   M._pos2v_gpu_enable(0);
   const gpu = req.gpu
     ? await attachGpu(gpuState, M as unknown as GpuHost, "pos2v", {
-        plotId: header.plotId, k: header.k, testnet: false, strength: 2, pairs: false, memory64: false,
+        plotId: await firstPlotId(header.plotGroupId, header.metaGroup), k: header.k, strength: 2, pairs: false,
+        memory64: false,
       })
     : { note: "GPU off", stillEnabled: () => false, stop: () => {} };
   let gpuNote = gpu.note;
 
-  const run = async (i: number, net: Network) => {
+  const run = async (i: number) => {
     heap().set(await challenge(i), pCh);
-    if (M._pos2v_start(pPath, pId, header.k, header.strength, pCh, net === "testnet" ? 1 : 0) !== 0) {
-      throw new Error("validator busy");
+    if (M._pos2v_start(pPath, pId, header.k, header.strength, header.metaGroup, pCh) !== 0) {
+      throw new Error("validator rejected the header's parameters");
     }
     while (M._pos2v_status() === 1) await new Promise((r) => setTimeout(r, 5));
     if (M._pos2v_status() !== 2) throw new Error(M.UTF8ToString(M._pos2v_error()));
     return { found: M._pos2v_found(), solved: M._pos2v_solved(), valid: M._pos2v_valid() };
   };
 
-  let network: Network = req.network === "testnet" ? "testnet" : "mainnet";
   let found = 0, solved = 0, valid = 0;
   let error: string | undefined;
   try {
     for (let i = 0; i < req.challenges; i++) {
-      let r = await run(i, network);
-      // Testnet plots use a different hash constant, so none of their proofs validate as
-      // mainnet. On the first challenge with proofs, try testnet before calling it bad.
-      if (req.network === "auto" && found === 0 && r.found > 0 && r.valid === 0 && network === "mainnet") {
-        const t = await run(i, "testnet");
-        if (t.valid > 0) {
-          network = "testnet";
-          r = t;
-        }
-      }
+      const r = await run(i);
       found += r.found;
       solved += r.solved;
       valid += r.valid;
@@ -121,7 +121,7 @@ async function validate(req: ValidateRequest) {
     M.FS.unmount(mountpoint);
   }
   post({
-    type: "result", id: req.id, network, challenges: req.challenges,
+    type: "result", id: req.id, challenges: req.challenges,
     found, solved, valid, ms: performance.now() - t0, gpuNote, error,
   });
 }
@@ -133,7 +133,7 @@ self.onmessage = (ev: MessageEvent<ValidateRequest>) => {
   queue = queue.then(() =>
     validate(req).catch((e: unknown) => {
       post({
-        type: "result", id: req.id, network: "mainnet", challenges: req.challenges,
+        type: "result", id: req.id, challenges: req.challenges,
         found: 0, solved: 0, valid: 0, ms: 0, gpuNote: "", error: errorText(e),
       });
     }),

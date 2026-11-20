@@ -72,12 +72,12 @@ struct Params {
   key2: vec4<u32>,
   x_start: u32,
   count: u32,
-  xor_const: u32,
   mask: u32,
   shift: u32,
   capacity: u32,
   row: u32,
-  pad: u32,
+  pad0: u32,
+  pad1: u32,
 }
 @group(0) @binding(0) var<uniform> P: Params;
 @group(0) @binding(1) var<storage, read> lut: array<u32, 1024>;
@@ -87,7 +87,7 @@ struct Params {
 
 ${AES_WGSL}
 fn g(x: u32) -> u32 {
-  var w = vec4<u32>(x ^ P.xor_const, 0u, 0u, 0u);
+  var w = vec4<u32>(x, 0u, 0u, 0u);
   for (var r = 0u; r < 16u; r++) {
     w = enc(w, P.key1);
     w = enc(w, P.key2);

@@ -13,7 +13,12 @@ export class DerivedPlot {
      */
     readonly memo: Uint8Array;
     /**
-     * The plot group ID in hex. Plots with the same group ID pass the filter together.
+     * The plot group ID bytes, for the plotter and the plot group file header.
+     */
+    readonly plot_group_id: Uint8Array;
+    /**
+     * The plot group ID in hex, for the file name. Plots with the same group ID pass the
+     * filter together.
      */
     readonly plot_group_id_hex: string;
     /**
@@ -110,6 +115,7 @@ export interface InitOutput {
     readonly derive: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number) => [number, number, number];
     readonly derive_from_memo: (a: number, b: number, c: number, d: number, e: number) => [number, number, number];
     readonly derivedplot_memo: (a: number) => [number, number];
+    readonly derivedplot_plot_group_id: (a: number) => [number, number];
     readonly derivedplot_plot_group_id_hex: (a: number) => [number, number];
     readonly derivedplot_plot_id: (a: number) => [number, number];
     readonly derivedplot_plot_id_hex: (a: number) => [number, number];

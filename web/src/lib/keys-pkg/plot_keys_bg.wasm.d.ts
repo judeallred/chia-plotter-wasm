@@ -8,6 +8,7 @@ export const check_public_key: (a: number, b: number) => [number, number];
 export const derive: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number) => [number, number, number];
 export const derive_from_memo: (a: number, b: number, c: number, d: number, e: number) => [number, number, number];
 export const derivedplot_memo: (a: number) => [number, number];
+export const derivedplot_plot_group_id: (a: number) => [number, number];
 export const derivedplot_plot_group_id_hex: (a: number) => [number, number];
 export const derivedplot_plot_id: (a: number) => [number, number];
 export const derivedplot_plot_id_hex: (a: number) => [number, number];

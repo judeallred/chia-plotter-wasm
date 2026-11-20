@@ -20,9 +20,10 @@ export interface PlotFileInfo {
 export async function readPlotInfo(file: File): Promise<PlotFileInfo | null> {
   try {
     const h = await readPlotHeader(file);
-    const m = inspect_memo(h.memo, h.strength, h.index, h.metaGroup, "xch");
+    const m = inspect_memo(h.memo, h.strength, 0, h.metaGroup, "xch");
+    // A plot group file of one plot is plot index 0, the only kind written today.
     const info = {
-      strength: h.strength, index: h.index, metaGroup: h.metaGroup, memo: h.memo,
+      strength: h.strength, index: 0, metaGroup: h.metaGroup, memo: h.memo,
       groupId: m.plot_group_id_hex, farmerKey: m.farmer_public_key, pool: m.pool_contract_address || m.pool_public_key,
     };
     m.free();
@@ -38,13 +39,13 @@ export interface FoundPlot {
   path: string;
 }
 
-// Lists .plot2 files under dir, including subfolders.
+// Lists .gplot files under dir, including subfolders.
 export async function walkPlots(dir: FileSystemDirectoryHandle, prefix = ""): Promise<FoundPlot[]> {
   const out: FoundPlot[] = [];
   for await (const entry of (dir as unknown as { values(): AsyncIterable<FileSystemHandle> }).values()) {
     if (entry.kind === "directory") {
       out.push(...(await walkPlots(entry as FileSystemDirectoryHandle, `${prefix}${entry.name}/`)));
-    } else if (entry.name.endsWith(".plot2")) {
+    } else if (entry.name.endsWith(".gplot")) {
       out.push({ file: await (entry as FileSystemFileHandle).getFile(), path: prefix + entry.name });
     }
   }

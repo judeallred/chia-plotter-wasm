@@ -1,9 +1,10 @@
 // Headless smoke test of the WASM plotter in Node, using the same pull-based write API as
-// the browser. Usage: node tools/node-plot.mjs <wasm32|wasm64> <k> <strength> <plot_id_hex> <memo_hex> <out>
+// the browser. Usage: node tools/node-plot.mjs <wasm32|wasm64> <k> <strength> <plot_group_id_hex> <memo_hex> <out>
+// [index] [meta_group]
 import { open } from "node:fs/promises";
 import path from "node:path";
 
-const [variant, k, strength, plotIdHex, memoHex, out] = process.argv.slice(2);
+const [variant, k, strength, groupIdHex, memoHex, out, index = "0", metaGroup = "0"] = process.argv.slice(2);
 const bits = variant === "wasm64" ? "64" : "32";
 const dir = path.resolve(import.meta.dirname, `../core/build-${variant}`);
 const { default: create } = await import(path.join(dir, `pos2w${bits}.js`));
@@ -25,13 +26,13 @@ const alloc = (bytes) => {
   heap().set(bytes, p);
   return p;
 };
-const plotId = Buffer.from(plotIdHex, "hex");
+const groupId = Buffer.from(groupIdHex, "hex");
 const memo = Buffer.from(memoHex, "hex");
-const pId = alloc(plotId), pMemo = alloc(memo);
+const pGroup = alloc(groupId), pMemo = alloc(memo);
 
 if (process.env.THREADS) M._pos2w_set_threads(+process.env.THREADS);
 const t0 = performance.now();
-const rc = M._pos2w_start(at(pId), +k, +strength, 0, 0, at(pMemo), memo.length, process.env.TESTNET ? 1 : 0);
+const rc = M._pos2w_start(at(pGroup), +k, +strength, +index, +metaGroup, at(pMemo), memo.length);
 if (rc !== 0) throw new Error(`start failed ${rc}`);
 while (M._pos2w_status() === 1) {
   await new Promise((r) => setTimeout(r, 250));
@@ -43,15 +44,18 @@ const t1 = performance.now();
 
 const fh = await open(out, "w");
 const headerSize = M._pos2w_begin_write();
+if (headerSize < 0) throw new Error(M.UTF8ToString(ptr(M._pos2w_error())));
 let pos = headerSize;
+// Each chunk, then the chunk index.
 for (;;) {
-  const p = ptr(M._pos2w_next_chunk());
+  const p = ptr(M._pos2w_next_piece());
   if (!p) break;
-  const len = M._pos2w_chunk_len();
+  const len = M._pos2w_piece_len();
   await fh.write(heap().slice(p, p + len), 0, len, pos);
   pos += len;
 }
 const h = ptr(M._pos2w_header());
+if (!h) throw new Error(M.UTF8ToString(ptr(M._pos2w_error())) || "plot file is incomplete");
 await fh.write(heap().slice(h, h + M._pos2w_header_len()), 0, M._pos2w_header_len(), 0);
 await fh.close();
 const t2 = performance.now();

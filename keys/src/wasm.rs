@@ -33,7 +33,15 @@ impl DerivedPlot {
         hex::encode(self.info.plot_id)
     }
 
-    /// The plot group ID in hex. Plots with the same group ID pass the filter together.
+    /// The plot group ID bytes, for the plotter and the plot group file header.
+    #[wasm_bindgen(getter)]
+    #[must_use]
+    pub fn plot_group_id(&self) -> Vec<u8> {
+        self.info.plot_group_id.to_vec()
+    }
+
+    /// The plot group ID in hex, for the file name. Plots with the same group ID pass the
+    /// filter together.
     #[wasm_bindgen(getter)]
     #[must_use]
     pub fn plot_group_id_hex(&self) -> String {

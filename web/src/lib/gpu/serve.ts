@@ -8,7 +8,7 @@ import { PAIR_OUT_WORDS } from "./wgsl";
 // Offsets into the shared Request struct. Mirrors pos2w::gpu::Request, whose static_assert
 // lists the same offsets.
 const R = {
-  state: 0, op: 4, k: 8, xorConst: 12, key1: 16, key2: 32, bitmaskShift: 48,
+  state: 0, op: 4, k: 8, key1: 16, key2: 32, bitmaskShift: 48,
   bitmaskWords: 52, outPtr: 56, outCapacity: 64, bitmaskPtr: 72, resultCount: 80, gpuMs: 88,
   tableId: 96, strength: 100, numMatchKeys: 104, mask: 108, inPtr: 112, count: 120,
   rPtr: 128, rCount: 136, auxPtr: 144, lStride: 152, direct: 156, feistelKeys: 160,
@@ -53,7 +53,7 @@ class Request {
       key1[i] = this.u32(R.key1 + 4 * i);
       key2[i] = this.u32(R.key2 + 4 * i);
     }
-    return { key1, key2, k: this.u32(R.k), xorConst: this.u32(R.xorConst) };
+    return { key1, key2, k: this.u32(R.k) };
   }
 }
 

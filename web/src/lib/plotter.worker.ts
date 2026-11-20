@@ -1,5 +1,5 @@
 /// <reference lib="webworker" />
-// Runs the pos2 WASM plotter and streams the finished plot file to disk.
+// Runs the pos2 WASM plotter and streams the finished plot group file to disk.
 //
 // The core module is loaded on demand. k28 needs the memory64 build (about 9 GB of heap),
 // smaller k sizes use the wasm32 build. Plotting itself runs on a pthread inside the
@@ -20,8 +20,7 @@ interface Pos2Module {
   _pos2w_set_threads(n: number): void;
   _pos2w_threads(): number;
   _pos2w_start(
-    plotId: Pointer, k: number, strength: number, index: number, metaGroup: number, memo: Pointer, memoLen: number,
-    testnet: number,
+    plotGroupId: Pointer, k: number, strength: number, index: number, metaGroup: number, memo: Pointer, memoLen: number,
   ): number;
   _pos2w_status(): number;
   _pos2w_progress(): number;
@@ -32,8 +31,8 @@ interface Pos2Module {
   _pos2w_cancel(): void;
   _pos2w_pause(on: number): void;
   _pos2w_begin_write(): number;
-  _pos2w_next_chunk(): Pointer;
-  _pos2w_chunk_len(): number;
+  _pos2w_next_piece(): Pointer;
+  _pos2w_piece_len(): number;
   _pos2w_num_chunks(): number;
   _pos2w_header(): Pointer;
   _pos2w_header_len(): number;
@@ -134,7 +133,7 @@ async function setUpGpu(M: Pos2Module, job: PlotJob): Promise<GpuAttachment> {
     return { note: "GPU off in settings", stillEnabled: () => false, stop: () => {} };
   }
   return attachGpu(gpuState, M as unknown as GpuHost, "pos2w", {
-    plotId: job.plotId, k: job.k, testnet: job.testnet, strength: job.strength, pairs: true, memory64: job.k > 26,
+    plotId: job.plotId, k: job.k, strength: job.strength, pairs: true, memory64: job.k > 26,
   });
 }
 
@@ -187,10 +186,10 @@ async function plotAndWrite(M: Pos2Module, job: PlotJob, gpu: GpuAttachment, t0:
     heap().set(bytes, p);
     return p;
   };
-  const pId = alloc(job.plotId);
+  const pGroup = alloc(job.plotGroupId);
   const pMemo = alloc(job.memo);
-  const rc = M._pos2w_start(at(pId), job.k, job.strength, job.plotIndex, job.metaGroup, at(pMemo), job.memo.length, job.testnet ? 1 : 0);
-  M._free(at(pId));
+  const rc = M._pos2w_start(at(pGroup), job.k, job.strength, job.plotIndex, job.metaGroup, at(pMemo), job.memo.length);
+  M._free(at(pGroup));
   M._free(at(pMemo));
   if (rc !== 0) throw new Error(`plotter rejected parameters (code ${rc})`);
   M._pos2w_pause(paused ? 1 : 0);
@@ -235,29 +234,32 @@ async function plotAndWrite(M: Pos2Module, job: PlotJob, gpu: GpuAttachment, t0:
     const headerSize = M._pos2w_begin_write();
     if (headerSize < 0) throw new Error(errorMessage() || "failed to prepare plot");
     const numChunks = M._pos2w_num_chunks();
-    // Reserve the header. It is rewritten with the real chunk offsets at the end.
+    // Reserve the header. It is rewritten at the end, once it knows where the chunk index
+    // starts.
     await writer.write(0, new Uint8Array(headerSize));
     let pos = headerSize;
     for (let i = 0; ; i++) {
       if (cancelRequested) throw new DOMException("cancelled", "AbortError");
       // The write loop runs here in JavaScript, so pausing it is just waiting.
       while (paused && !cancelRequested) await sleep(100);
-      const p = ptr(M._pos2w_next_chunk());
+      // Each chunk, then the chunk index.
+      const p = ptr(M._pos2w_next_piece());
       if (!p) break;
-      const len = M._pos2w_chunk_len();
+      const len = M._pos2w_piece_len();
       // slice() copies out of the shared WASM heap, which file APIs do not accept.
       await writer.write(pos, heap().slice(p, p + len));
       pos += len;
       if (i % 16 === 0) {
         post({
-          type: "progress", phase: "writing", fraction: i / numChunks, table: 0,
-          detail: `writing chunk ${i + 1} of ${numChunks}`,
+          type: "progress", phase: "writing", fraction: Math.min(1, i / numChunks), table: 0,
+          detail: `writing chunk ${Math.min(i + 1, numChunks)} of ${numChunks}`,
           heapBytes: M.wasmMemory.buffer.byteLength,
         });
       }
     }
     if (M._pos2w_status() < 0) throw new Error(errorMessage());
     const h = ptr(M._pos2w_header());
+    if (!h) throw new Error(errorMessage() || "plot file is incomplete");
     await writer.write(0, heap().slice(h, h + M._pos2w_header_len()));
     file = await writer.close();
     bytes = pos;

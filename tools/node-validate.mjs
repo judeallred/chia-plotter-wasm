@@ -1,15 +1,14 @@
 // Runs the WASM validator (core/build-wasm32/pos2v) on plot files in Node, for comparing
-// against tools/check_plot.py. Usage: node tools/node-validate.mjs [-n challenges] [--testnet] plot2...
+// against tools/check_plot.py. Usage: node tools/node-validate.mjs [-n challenges] gplot...
 import { createHash } from "node:crypto";
 import { openSync, readSync, closeSync } from "node:fs";
 import path from "node:path";
 
 const args = process.argv.slice(2);
-let n = 30, testnet = 0;
+let n = 30;
 const files = [];
 for (let i = 0; i < args.length; i++) {
   if (args[i] === "-n") n = +args[++i];
-  else if (args[i] === "--testnet") testnet = 1;
   else files.push(path.resolve(args[i]));
 }
 
@@ -25,12 +24,14 @@ for (const file of files) {
   const h = Buffer.alloc(64);
   readSync(fd, h, 0, 64, 0);
   closeSync(fd);
-  const plotId = h.subarray(5, 37), k = h[37], strength = h[38];
+  // PlotGroupFile::Header: "PoS2", version, group ID, k, strength, group size, meta group.
+  if (h.toString("latin1", 0, 4) !== "PoS2") throw new Error(`${file}: not a plot group file`);
+  const groupId = h.subarray(5, 37), k = h[37], strength = h[38], metaGroup = h[41];
   const dir = path.dirname(file);
   M.FS.mkdirTree("/mnt");
   M.FS.mount(M.NODEFS, { root: dir }, "/mnt");
   const pPath = cstr("/mnt/" + path.basename(file));
-  const pId = alloc(plotId);
+  const pId = alloc(groupId);
   const pCh = M._malloc(32) >>> 0;
   let found = 0, valid = 0, proveMs = 0, solveMs = 0;
   const t0 = performance.now();
@@ -38,7 +39,7 @@ for (const file of files) {
     const idx = Buffer.alloc(32);
     idx.writeBigUInt64BE(BigInt(i), 24);
     heap().set(createHash("sha256").update(idx).digest(), pCh);
-    if (M._pos2v_start(pPath, pId, k, strength, pCh, testnet) !== 0) throw new Error("start failed");
+    if (M._pos2v_start(pPath, pId, k, strength, metaGroup, pCh) !== 0) throw new Error("start failed");
     while (M._pos2v_status() === 1) await new Promise((r) => setTimeout(r, 2));
     if (M._pos2v_status() !== 2) {
       console.log(`  error: ${M.UTF8ToString(M._pos2v_error())}`);

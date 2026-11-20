@@ -43,9 +43,9 @@ export class History {
       `<td class="group"></td><td class="num"></td>` +
       `<td class="num"><div class="total"></div><div class="text-xs text-muted split"></div></td>` +
       `<td class="gpu"></td><td class="check"><span class="pill pill-muted">not checked</span></td>`;
-    // Plot IDs are long, so show the start and end and keep the full name on hover.
+    // Group IDs are long, so show the start and end and keep the full name on hover.
     const name = $<HTMLElement>(".name", tr);
-    const m = filename.match(/^(plot-k\d+-)([0-9a-f]{64})(\.plot2)$/);
+    const m = filename.match(/^(plot-k\d+-)([0-9a-f]{64})(\.gplot)$/);
     name.textContent = m ? `${m[1]}${m[2].slice(0, 8)}…${m[2].slice(-4)}${m[3]}` : filename;
     name.title = filename;
     tr.cells[2].textContent = fmtBytes(bytes);

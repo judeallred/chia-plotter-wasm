@@ -10,7 +10,8 @@ EXPORT_FN uint32_t GPU_FN(gpu_cpu_match_target)(uint8_t const* plot_id,
     uint32_t meta_lo,
     uint32_t meta_hi)
 {
-    ProofParams params(plot_id, uint8_t(k), uint8_t(strength), 0);
+    PlotProofParams const params
+        = PlotProofParams::create_raw(PlotId(plot_id), uint8_t(k), uint8_t(strength));
     ProofCore core(params);
     return core.matching_target(size_t(table_id), (uint64_t(meta_hi) << 32) | meta_lo, match_key);
 }
@@ -18,8 +19,8 @@ EXPORT_FN uint32_t GPU_FN(gpu_cpu_match_target)(uint8_t const* plot_id,
 // Matching target mask width for a table, for the GPU self test.
 EXPORT_FN int32_t GPU_FN(gpu_match_target_bits)(int32_t k, int32_t strength, int32_t table_id)
 {
-    uint8_t id[32] = {};
-    ProofParams params(id, uint8_t(k), uint8_t(strength), 0);
+    PlotProofParams const params
+        = PlotProofParams::create_raw(PlotId(), uint8_t(k), uint8_t(strength));
     return static_cast<int32_t>(params.get_num_match_target_bits(table_id));
 }
 
@@ -35,7 +36,7 @@ EXPORT_FN double GPU_FN(gpu_split)(int32_t table)
 // Table 3's Feistel round keys for a plot ID, 12 words, for the GPU self test.
 EXPORT_FN void GPU_FN(gpu_feistel_keys)(uint8_t const* plot_id, int32_t k, uint32_t* out)
 {
-    ProofParams params(plot_id, uint8_t(k), 2, 0);
+    PlotProofParams const params = PlotProofParams::create_raw(PlotId(plot_id), uint8_t(k), 2);
     pos2w::feistel_round_keys(params, out);
 }
 
@@ -50,7 +51,8 @@ EXPORT_FN int32_t GPU_FN(gpu_cpu_pair)(uint8_t const* plot_id,
     void const* r,
     void* out)
 {
-    ProofParams params(plot_id, uint8_t(k), uint8_t(strength), 0);
+    PlotProofParams const params
+        = PlotProofParams::create_raw(PlotId(plot_id), uint8_t(k), uint8_t(strength));
     ProofCore core(params);
     if (table_id == 1) {
         auto const* a = static_cast<Xs_Candidate const*>(l);

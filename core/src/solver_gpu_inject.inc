@@ -36,10 +36,8 @@ bool filterX2CandidatesGpu(std::span<uint32_t const> const x1_bitmask,
     size_t const num_match_target_hashes = num_x_pairs * x1_range_size * num_match_keys;
     double const hit_probability
         = double(num_match_target_hashes) / double(NUM_XS >> this->bitmask_shift_);
-    double const extra_margin = (num_k_bits < 28) ? 1.0 + 0.01 * double(28 - num_k_bits) : 1.0;
-    uint64_t const estimated_matches
-        = uint64_t(hit_probability * static_cast<double>(NUM_XS) * extra_margin);
-    size_t const MAX_RESULTS_PER_THREAD = (estimated_matches / num_threads) & ~size_t(0xf);
+    uint64_t const max_candidates = NUM_XS - uint64_t(num_threads - 1) * chunk_size;
+    size_t const MAX_RESULTS_PER_THREAD = x2CandidateCapacity(hit_probability, max_candidates);
     size_t const capacity = size_t(num_threads) * MAX_RESULTS_PER_THREAD;
 
     Timer timer;

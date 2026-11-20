@@ -15,7 +15,7 @@ publish = false
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-chia-bls = "0.49.0"
+chia-bls = "0.55.0"
 sha2 = "0.10.9"
 bech32 = "0.11"
 hex = "0.4"

@@ -124,6 +124,9 @@
   label.option span {
     @apply leading-snug;
   }
+  label.option:has(input:disabled) {
+    @apply cursor-default opacity-50;
+  }
   .mono {
     @apply font-mono text-sm;
   }

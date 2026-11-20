@@ -17,7 +17,7 @@ import {
 } from "./settings";
 import { type PlotStatsSource, startStats } from "./stats";
 import { setupValidateSection } from "./validate-ui";
-import { Validator } from "./validate";
+import { Validator, plotFileName } from "./validate";
 
 function renderEnv(caps: Capabilities) {
   const items: [boolean, string][] = [
@@ -327,7 +327,7 @@ export async function start() {
         }
         if (plotter.stopping) return;
         const { derived, group } = next.value;
-        const filename = `plot-k${s.k}-${derived.plot_id_hex}.plot2`;
+        const filename = plotFileName(s.k, derived.plot_group_id_hex);
         let plotSink = sink;
         if (sink.kind === "dir" && s.groupFolders && s.groupKeys !== "none") {
           // One folder per plot key (group ID). Meta groups of the same key share it, so a hard
@@ -335,8 +335,8 @@ export async function start() {
           plotSink = { kind: "dir", dir: await sink.dir.getDirectoryHandle(`group-${group.groupId.slice(0, 16)}`, { create: true }) };
         }
         const job: PlotJob = {
-          k: s.k, strength: group.strength, plotIndex: group.index, metaGroup: group.metaGroup,
-          plotId: derived.plot_id, memo: derived.memo, testnet: s.network === "testnet", threads: s.threads, gpu: s.gpu,
+          k: s.k, strength: group.strength, plotGroupId: derived.plot_group_id, plotIndex: group.index,
+          metaGroup: group.metaGroup, plotId: derived.plot_id, memo: derived.memo, threads: s.threads, gpu: s.gpu,
           filename, sink: plotSink,
         };
         derived.free();

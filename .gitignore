@@ -6,6 +6,7 @@ scratch/
 target/
 build/
 *.plot2
+*.gplot
 *.bin
 .DS_Store
 core/build-*/

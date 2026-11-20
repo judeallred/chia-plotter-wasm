@@ -1,15 +1,17 @@
-// pos2w: a small C API around the pos2-chip 0.6.0 plotter, built for WebAssembly.
+// pos2w: a small C API around the pos2-chip 1.0.1 plotter, built for WebAssembly.
 //
 // The plot runs on a background thread so the caller (a Web Worker) stays free to poll
-// progress. When plotting finishes, the caller pulls the plot file out piece by piece:
+// progress. When plotting finishes, the caller pulls the plot group file out piece by piece:
 //
 //   1. pos2w_begin_write() chunks the proof fragments and returns the header size.
-//   2. pos2w_next_chunk() compresses and returns one chunk body at a time.
-//   3. pos2w_header() returns the final header, including the chunk offset table.
+//   2. pos2w_next_piece() returns the file body one piece at a time: each compressed chunk
+//      in order, then the chunk index.
+//   3. pos2w_header() returns the final header, which records where the chunk index starts.
 //
-// The caller writes header_size placeholder bytes, then every chunk in order, then
+// The caller writes header_size placeholder bytes, then every piece in order, then
 // overwrites the start of the file with the header. The resulting bytes are identical to
-// PlotFile::writeData from pos2-chip, which is what chia_rs 0.49 reads.
+// PlotGroupFile::writeData from pos2-chip, which is what chia_rs.create_v2_single_plot_group
+// writes and what chia_rs.Prover reads.
 
 #include <atomic>
 #include <chrono>
@@ -25,12 +27,12 @@
 #include "common/thread.hpp"
 #include "gpu_bridge.hpp"
 #include "phase_timings.hpp"
-#include "plot/ChunkCompressor.hpp"
 #include "plot/PlotData.hpp"
 #include "plot/PlotFile.hpp"
 #include "plot/Plotter.hpp"
 #include "plot/Progress.hpp"
 #include "pos/ProofParams.hpp"
+#include "pos/sha/sha256.hpp"
 
 #if defined(__EMSCRIPTEN__)
 #include <emscripten/console.h>
@@ -39,6 +41,209 @@
 #else
 #define POS2W_EXPORT extern "C"
 #endif
+
+namespace pos2w {
+
+// Writes a plot group file of one plot in pieces, byte for byte as PlotGroupFile::writeData
+// does. PlotGroupFile names this struct a friend (see core/CMakeLists.txt) so it can use the
+// same private FSE table and chunk range helpers.
+struct GroupWriter {
+    using File = PlotGroupFile;
+
+    GroupWriter() = default;
+    GroupWriter(GroupWriter const&) = delete;
+    GroupWriter& operator=(GroupWriter const&) = delete;
+    ~GroupWriter()
+    {
+        if (ct_) {
+            POS2_FSE_freeCTable(ct_);
+        }
+    }
+
+    // Chunks the plot and builds the header with a placeholder chunk index offset.
+    void begin(PlotData& plot, PlotGroupParams const& group, std::span<uint8_t const> memo)
+    {
+        auto const k = static_cast<uint8_t>(group.get_k());
+        range_per_chunk_ = File::getRangePerChunkForK(k);
+        chunked_ = ChunkedProofFragments::convertToChunkedProofFragments(plot, range_per_chunk_);
+        plot = PlotData {};
+        std::size_t const chunk_count = chunked_.proof_fragments_chunks.size();
+        if (chunk_count != File::getChunkCountForK(k)) {
+            throw std::runtime_error("Unexpected chunk count: " + std::to_string(chunk_count)
+                + " != " + std::to_string(File::getChunkCountForK(k)));
+        }
+        header_ = File::Header {
+            .magic = File::MAGIC,
+            .version = File::FORMAT_VERSION,
+            .group_id = group.get_plot_group_id(),
+            .k = k,
+            .strength = static_cast<uint8_t>(group.get_strength()),
+            .group_size = 1,
+            .meta_group = static_cast<uint8_t>(group.get_meta_group()),
+            .chunk_index_offset = 0,
+            .memo_length = static_cast<uint8_t>(memo.size()),
+        };
+        memo_.assign(memo.begin(), memo.end());
+        offsets_.assign(chunk_count, 0);
+        ans_buffer_.resize(std::size_t(1) << File::PROOFS_PER_CHUNK_BITS);
+        ct_ = File::createFSECTable();
+        next_ = 0;
+        index_written_ = false;
+        file_pos_ = header_bytes().size();
+    }
+
+    std::size_t num_chunks() const { return offsets_.size(); }
+
+    // The next piece of the file after the header, or nullptr once the file is complete.
+    std::vector<uint8_t> const* next()
+    {
+        piece_.clear();
+        if (next_ < offsets_.size()) {
+            std::size_t const i = next_++;
+            encode_chunk(i);
+            // Release this chunk's fragments now that they are compressed.
+            std::vector<ProofFragment>().swap(chunked_.proof_fragments_chunks[i]);
+            offsets_[i] = file_pos_;
+        }
+        else if (!index_written_) {
+            encode_index();
+            index_written_ = true;
+        }
+        else {
+            return nullptr;
+        }
+        file_pos_ += piece_.size();
+        return &piece_;
+    }
+
+    bool done() const { return index_written_; }
+
+    // The header and memo, as they start the file.
+    std::vector<uint8_t> header_bytes() const
+    {
+        std::vector<uint8_t> h(sizeof(header_) + memo_.size());
+        std::memcpy(h.data(), &header_, sizeof(header_));
+        std::memcpy(h.data() + sizeof(header_), memo_.data(), memo_.size());
+        return h;
+    }
+
+private:
+    // One chunk: the deltas between sorted, deduplicated fragments, split into a high byte
+    // (FSE coded) and unary plus low bits. Mirrors the chunk loop of writeData.
+    void encode_chunk(std::size_t chunk_index)
+    {
+        uint8_t const low_bits_count = header_.k - 8;
+        uint64_t const threshold = (178ull << (header_.k - 8));
+        uint64_t const low_mask = ((1ull << low_bits_count) - 1);
+
+        std::vector<uint64_t>& deltas = deltas_;
+        deltas = chunked_.proof_fragments_chunks[chunk_index];
+        if (deltas.empty()) {
+            throw std::runtime_error("empty plot chunk");
+        }
+        uint64_t const start = chunk_index * range_per_chunk_;
+        uint64_t prev_value = deltas[0];
+        deltas[0] = prev_value - start;
+        std::size_t count = 1;
+        for (std::size_t i = 1; i < deltas.size(); i++) {
+            uint64_t const fragment = deltas[i];
+            if (fragment == prev_value) {
+                continue;
+            }
+            deltas[count++] = fragment - prev_value;
+            prev_value = fragment;
+        }
+        deltas.resize(count);
+
+        high_bytes_.resize(deltas.size());
+        bits_.clear();
+        for (std::size_t i = 0; i < deltas.size(); i++) {
+            uint64_t const d = deltas[i];
+            uint64_t const quotient = d / threshold;
+            uint64_t const remainder = d - quotient * threshold;
+            uint64_t const unary_value = (1ull << quotient) - 1;
+            uint64_t const low_bits = remainder & low_mask;
+            bits_.append((unary_value << low_bits_count) | low_bits,
+                uint32_t(1 + quotient + low_bits_count));
+            high_bytes_[i] = uint8_t(remainder >> low_bits_count);
+        }
+
+        std::size_t ans_size = 0;
+        constexpr int kMaxRetries = 5;
+        for (int retry = 0; retry < kMaxRetries; retry++) {
+            ans_size = POS2_FSE_compress_usingCTable(ans_buffer_.data(),
+                ans_buffer_.capacity(),
+                high_bytes_.data(),
+                high_bytes_.size(),
+                ct_);
+            bool const too_small = ans_size == 0
+                || (POS2_FSE_isError(ans_size)
+                    && -FSE_ErrorCode(ans_size) == FSE_error_dstSize_tooSmall);
+            if (too_small) {
+                if (retry + 1 < kMaxRetries) {
+                    ans_buffer_.resize(ans_buffer_.capacity() * 2);
+                    continue;
+                }
+                throw std::runtime_error("FSE_compress_usingCTable error");
+            }
+            if (POS2_FSE_isError(ans_size)) {
+                throw std::runtime_error(std::string("FSE_compress_usingCTable error: ")
+                    + POS2_FSE_getErrorName(ans_size));
+            }
+            if (ans_size > deltas.size()) {
+                throw std::runtime_error("ANS is larger than raw bytes");
+            }
+            break;
+        }
+
+        // LEB128 length of the FSE part, then the FSE part, then the unary and low bits.
+        uint64_t const bit_count = (sizeof(ans_size) * 8) - std::countl_zero(ans_size);
+        uint64_t const leb_count = cdiv(bit_count, 7);
+        for (std::size_t i = 0; i < leb_count; i++) {
+            uint8_t byte = uint8_t((ans_size >> (i * 7)) & 0x7f);
+            if (i + 1 < leb_count) {
+                byte |= 0x80;
+            }
+            piece_.push_back(byte);
+        }
+        piece_.insert(piece_.end(), ans_buffer_.begin(), ans_buffer_.begin() + std::ptrdiff_t(ans_size));
+        std::span<uint8_t const> const rest = bits_.asBytes();
+        piece_.insert(piece_.end(), rest.begin(), rest.end());
+    }
+
+    // The chunk sizes, gsz coded, after the last chunk. The header points at them.
+    void encode_index()
+    {
+        header_.chunk_index_offset = file_pos_;
+        std::vector<uint64_t> sizes(offsets_.size());
+        for (std::size_t i = 0; i + 1 < offsets_.size(); i++) {
+            sizes[i] = offsets_[i + 1] - offsets_[i];
+        }
+        sizes.back() = file_pos_ - offsets_.back();
+        BitWriter writer;
+        writer.clear();
+        gsz_encode(sizes, header_.group_size, writer);
+        std::span<uint8_t const> const bytes = writer.asBytes();
+        piece_.assign(bytes.begin(), bytes.end());
+    }
+
+    File::Header header_ {};
+    std::vector<uint8_t> memo_;
+    ChunkedProofFragments chunked_;
+    uint64_t range_per_chunk_ = 0;
+    std::vector<uint64_t> offsets_;
+    std::size_t next_ = 0;
+    bool index_written_ = false;
+    uint64_t file_pos_ = 0;
+    FSE_CTable* ct_ = nullptr;
+    std::vector<uint8_t> ans_buffer_;
+    std::vector<uint64_t> deltas_;
+    std::vector<uint8_t> high_bytes_;
+    BitWriter bits_;
+    std::vector<uint8_t> piece_;
+};
+
+} // namespace pos2w
 
 namespace {
 
@@ -96,9 +301,8 @@ private:
 };
 
 struct Job {
-    std::unique_ptr<ProofParams> params;
-    uint16_t index = 0;
-    uint8_t meta_group = 0;
+    std::unique_ptr<PlotGroupParams> group;
+    std::unique_ptr<PlotProofParams> params;
     std::vector<uint8_t> memo;
 
     Sink sink;
@@ -107,46 +311,12 @@ struct Job {
     std::thread worker;
 
     PlotData plot;
-    ChunkedProofFragments chunked;
-    size_t next_chunk = 0;
-    uint64_t file_pos = 0;
-    std::vector<uint64_t> offsets;
-    std::vector<uint8_t> chunk_buf;
+    pos2w::GroupWriter writer;
+    std::vector<uint8_t> const* piece = nullptr;
     std::vector<uint8_t> header;
 };
 
 Job* g_job = nullptr;
-
-void put(std::vector<uint8_t>& out, void const* p, size_t n)
-{
-    auto const* b = static_cast<uint8_t const*>(p);
-    out.insert(out.end(), b, b + n);
-}
-
-// Builds the header exactly as PlotFile::writeData lays it out.
-std::vector<uint8_t> build_header(Job const& j, std::vector<uint64_t> const& offsets)
-{
-    std::vector<uint8_t> h;
-    put(h, "pos2", 4);
-    uint8_t const version = PlotFile::FORMAT_VERSION;
-    put(h, &version, 1);
-    put(h, j.params->get_plot_id_bytes(), 32);
-    uint8_t const k = static_cast<uint8_t>(j.params->get_k());
-    uint8_t const match_key_bits = static_cast<uint8_t>(j.params->get_match_key_bits());
-    put(h, &k, 1);
-    put(h, &match_key_bits, 1);
-    put(h, &j.index, 2);
-    put(h, &j.meta_group, 1);
-    uint8_t const memo_size = static_cast<uint8_t>(j.memo.size());
-    put(h, &memo_size, 1);
-    put(h, j.memo.data(), j.memo.size());
-    uint64_t const num_chunks = offsets.size();
-    put(h, &num_chunks, 8);
-    for (uint64_t off: offsets) {
-        put(h, &off, 8);
-    }
-    return h;
-}
 
 void join_worker()
 {
@@ -158,20 +328,20 @@ void join_worker()
 } // namespace
 
 // Starts a plot on a background thread. Returns 0 on success.
-// plot_id must point to 32 bytes. memo must point to memo_len bytes.
-POS2W_EXPORT int32_t pos2w_start(uint8_t const* plot_id,
+// plot_group_id must point to 32 bytes. memo must point to memo_len bytes. The plot ID is
+// derived from the group ID, index and meta group, as PlotGroupParams does.
+POS2W_EXPORT int32_t pos2w_start(uint8_t const* plot_group_id,
     int32_t k,
     int32_t strength,
     int32_t index,
     int32_t meta_group,
     uint8_t const* memo,
-    int32_t memo_len,
-    int32_t testnet)
+    int32_t memo_len)
 {
     if (g_job && (g_job->status == kRunning)) {
         return -1;
     }
-    if ((k & 1) != 0 || k < 18 || k > 32 || strength < 2 || strength > 255) {
+    if ((k & 1) != 0 || k < K_MIN || k > K_MAX || strength < STRENGTH_MIN || strength > STRENGTH_MAX) {
         return -2;
     }
     if (index < 0 || index > 65535 || meta_group < 0 || meta_group > 255) {
@@ -182,14 +352,21 @@ POS2W_EXPORT int32_t pos2w_start(uint8_t const* plot_id,
     if (sizeof(void*) < 8 && k > 26) {
         return -5;
     }
-    if (plot_id == nullptr || memo == nullptr || memo_len <= 0 || memo_len > 255) {
+    if (plot_group_id == nullptr || memo == nullptr || memo_len <= 0 || memo_len > 255) {
         return -4;
     }
-    // ProofParams rejects some combinations itself (strength must be below k - 3). Check
-    // before touching the current job, and never let the exception cross the C boundary.
-    std::unique_ptr<ProofParams> params;
+    // The params reject some combinations themselves (strength must be below k minus the
+    // section bits minus 1). Check before touching the current job, and never let the
+    // exception cross the C boundary.
+    std::unique_ptr<PlotGroupParams> group;
+    std::unique_ptr<PlotProofParams> params;
     try {
-        params = std::make_unique<ProofParams>(plot_id, k, strength, static_cast<uint8_t>(testnet));
+        group = std::make_unique<PlotGroupParams>(PlotGroupId(plot_group_id),
+            static_cast<uint8_t>(k),
+            static_cast<uint8_t>(strength),
+            static_cast<uint8_t>(meta_group));
+        params = std::make_unique<PlotProofParams>(
+            group->get_plot_params_for_index(static_cast<uint16_t>(index)));
     }
     catch (std::exception const&) {
         return -2;
@@ -204,9 +381,8 @@ POS2W_EXPORT int32_t pos2w_start(uint8_t const* plot_id,
     pos2w::reset_phases();
     g_job = new Job();
     Job& j = *g_job;
+    j.group = std::move(group);
     j.params = std::move(params);
-    j.index = static_cast<uint16_t>(index);
-    j.meta_group = static_cast<uint8_t>(meta_group);
     j.memo.assign(memo, memo + memo_len);
     j.status = kRunning;
 
@@ -288,14 +464,8 @@ POS2W_EXPORT double pos2w_begin_write()
     Job& j = *g_job;
     join_worker();
     try {
-        uint64_t const range_per_chunk
-            = (1ULL << (j.params->get_k() + PlotFile::CHUNK_SPAN_RANGE_BITS));
-        j.chunked = ChunkedProofFragments::convertToChunkedProofFragments(j.plot, range_per_chunk);
-        j.plot = PlotData {};
-        j.offsets.assign(j.chunked.proof_fragments_chunks.size(), 0);
-        j.next_chunk = 0;
-        j.header = build_header(j, j.offsets);
-        j.file_pos = j.header.size();
+        j.writer.begin(j.plot, *j.group, j.memo);
+        j.header = j.writer.header_bytes();
         j.status = kWriting;
         return double(j.header.size());
     }
@@ -306,59 +476,44 @@ POS2W_EXPORT double pos2w_begin_write()
     }
 }
 
-POS2W_EXPORT double pos2w_num_chunks()
-{
-    return g_job ? double(g_job->chunked.proof_fragments_chunks.size()) : 0;
-}
+// Number of chunks in the file, for progress. pos2w_next_piece returns one more piece than
+// this: the chunk index.
+POS2W_EXPORT double pos2w_num_chunks() { return g_job ? double(g_job->writer.num_chunks()) : 0; }
 
-// Compresses the next chunk. Returns a pointer to its bytes, or null when no chunks remain.
-// The length is available from pos2w_chunk_len(). The buffer is valid until the next call.
-POS2W_EXPORT uint8_t const* pos2w_next_chunk()
+// Returns a pointer to the next piece of the file after the header, or null when none remain
+// (or on error, see pos2w_status). The length is pos2w_piece_len(). The buffer is valid until
+// the next call.
+POS2W_EXPORT uint8_t const* pos2w_next_piece()
 {
     if (!g_job || g_job->status != kWriting)
         return nullptr;
     Job& j = *g_job;
-    auto& chunks = j.chunked.proof_fragments_chunks;
-    if (j.next_chunk >= chunks.size())
-        return nullptr;
     try {
-        size_t const i = j.next_chunk++;
-        int const stub_bits = j.params->get_k() - PlotFile::MINUS_STUB_BITS;
-        uint64_t const range_per_chunk
-            = (1ULL << (j.params->get_k() + PlotFile::CHUNK_SPAN_RANGE_BITS));
-        std::vector<uint8_t> compressed
-            = ChunkCompressor::compressProofFragments(chunks[i], i * range_per_chunk, stub_bits);
-        // Release this chunk's fragments now that they are compressed.
-        std::vector<ProofFragment>().swap(chunks[i]);
-
-        // writeVector prefixes the bytes with a uint64 length.
-        j.chunk_buf.clear();
-        uint64_t const n = compressed.size();
-        put(j.chunk_buf, &n, 8);
-        put(j.chunk_buf, compressed.data(), compressed.size());
-
-        j.offsets[i] = j.file_pos;
-        j.file_pos += j.chunk_buf.size();
-        if (j.next_chunk == chunks.size()) {
-            j.header = build_header(j, j.offsets);
-        }
-        return j.chunk_buf.data();
+        j.piece = j.writer.next();
+        if (!j.piece)
+            return nullptr;
+        if (j.writer.done())
+            j.header = j.writer.header_bytes();
+        return j.piece->data();
     }
     catch (std::exception const& e) {
+        j.piece = nullptr;
         j.error = e.what();
         j.status = kError;
         return nullptr;
     }
 }
 
-POS2W_EXPORT double pos2w_chunk_len() { return g_job ? double(g_job->chunk_buf.size()) : 0; }
+POS2W_EXPORT double pos2w_piece_len()
+{
+    return g_job && g_job->piece ? double(g_job->piece->size()) : 0;
+}
 
-// Returns the final header, or null unless every chunk has been written. Length is
+// Returns the final header, or null unless every piece has been written. Length is
 // pos2w_header_len().
 POS2W_EXPORT uint8_t const* pos2w_header()
 {
-    if (!g_job || g_job->status != kWriting
-        || g_job->next_chunk != g_job->chunked.proof_fragments_chunks.size())
+    if (!g_job || g_job->status != kWriting || !g_job->writer.done())
         return nullptr;
     g_job->status = kDone;
     return g_job->header.data();

@@ -50,7 +50,7 @@ struct Request {
     int32_t state;
     int32_t op;
     uint32_t k;
-    uint32_t xor_const;
+    uint32_t reserved; // keeps the fields below at their offsets
     uint32_t key1[4];
     uint32_t key2[4];
     uint32_t bitmask_shift;
@@ -75,14 +75,14 @@ struct Request {
     // 1: write pairs straight to out_ptr (room for out_capacity) as they are found, instead
     // of holding them for kCopyPairs. Only when nothing else appends to the output.
     uint32_t direct;
-    // Table 3 encodes proof fragments with the Feistel cipher: per round, the key's three
-    // k bit words (low, middle, high), as FeistelCipher::feistel_round splits them.
+    // Table 3 encodes proof fragments with the Feistel cipher: per round, the key words b,
+    // c and d of FeistelCipher::RoundKey.
     uint32_t feistel_keys[12];
 };
 
 // Every offset, as listed in `R` in web/src/lib/gpu/serve.ts.
 static_assert(offsetof(Request, state) == 0 && offsetof(Request, op) == 4
-        && offsetof(Request, k) == 8 && offsetof(Request, xor_const) == 12
+        && offsetof(Request, k) == 8 && offsetof(Request, reserved) == 12
         && offsetof(Request, key1) == 16 && offsetof(Request, key2) == 32
         && offsetof(Request, bitmask_shift) == 48 && offsetof(Request, bitmask_words) == 52
         && offsetof(Request, out_ptr) == 56 && offsetof(Request, out_capacity) == 64
@@ -109,14 +109,13 @@ inline std::atomic<int32_t> g_pairs_mode { kPairsGpu };
 // finish together, and kept across plots.
 inline std::atomic<double> g_split[4] = { 0.7, 0.7, 0.7, 0.7 };
 
-inline void fill_params(Request& r, ProofParams const& params)
+inline void fill_params(Request& r, PlotProofParams const& params)
 {
-    uint8_t const* id = params.get_plot_id_bytes();
+    uint8_t const* id = params.get_plot_id().bytes();
     // AesHash::load_plot_id_as_aes_key reads the bytes as little endian 32 bit words.
     std::memcpy(r.key1, id, 16);
     std::memcpy(r.key2, id + 16, 16);
     r.k = static_cast<uint32_t>(params.get_k());
-    r.xor_const = params.is_testnet() ? TESTNET_G_XOR_CONST : 0;
 }
 
 // A request in flight. submit() returns as soon as JavaScript has been told, so the caller

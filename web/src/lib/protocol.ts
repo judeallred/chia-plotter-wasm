@@ -10,12 +10,14 @@ export type Sink =
 export interface PlotJob {
   k: number;
   strength: number;
-  // Position in the plot group and the group's meta group, stored in the plot header.
+  // The plot group ID, its meta group (both in the file header) and the plot's index in
+  // the group. The plotter derives the plot ID from all three.
+  plotGroupId: Uint8Array;
   plotIndex: number;
   metaGroup: number;
+  // The derived plot ID, for the GPU self test.
   plotId: Uint8Array;
   memo: Uint8Array;
-  testnet: boolean;
   threads: number;
   // Use WebGPU when available: for g(x) and all table pairs ("gpu"), or with table pairs
   // split between CPU and GPU ("hybrid"). The CPU is used if off or the GPU fails.
@@ -55,13 +57,15 @@ export type FromWorker =
 
 // Messages between the page and the validator worker.
 
+// Plots are the same on every network. The network only picks the address prefix.
 export type Network = "mainnet" | "testnet";
 
+// A plot group file's header. Plots in the group have indexes 0 to groupSize - 1.
 export interface PlotHeader {
-  plotId: Uint8Array;
+  plotGroupId: Uint8Array;
   k: number;
   strength: number;
-  index: number;
+  groupSize: number;
   metaGroup: number;
   memo: Uint8Array;
 }
@@ -71,8 +75,6 @@ export interface ValidateRequest {
   id: number;
   file: File;
   challenges: number;
-  // "auto" tries mainnet first and switches to testnet if mainnet proofs do not validate.
-  network: Network | "auto";
   gpu: boolean;
 }
 
@@ -82,7 +84,6 @@ export type FromValidator =
   | {
       type: "result";
       id: number;
-      network: Network;
       challenges: number;
       found: number;
       solved: number;
