@@ -56,7 +56,7 @@ const modules = new Map<string, Promise<Pos2Module>>();
 function loadModule(variant: "32" | "64"): Promise<Pos2Module> {
   let m = modules.get(variant);
   if (!m) {
-    const url = new URL(`/wasm/pos2w${variant}.js`, self.location.origin).href;
+    const url = new URL(`${import.meta.env.BASE_URL}wasm/pos2w${variant}.js`, self.location.origin).href;
     m = import(/* @vite-ignore */ url).then((mod) =>
       mod.default({
         printErr: (s: string) => console.warn("[pos2w]", s),

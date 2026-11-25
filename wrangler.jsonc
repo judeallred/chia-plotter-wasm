@@ -1,0 +1,21 @@
+{
+  "name": "chia-plotter-wasm",
+  "compatibility_date": "2026-08-30",
+  // Assets-only Worker serving deploy/, built by scripts/build-deploy.sh. The build is
+  // nested under deploy/plotter/ because Workers Assets can't mount a folder at a path prefix.
+  "assets": {
+    "directory": "./deploy"
+  },
+  // Plain routes, not a custom domain. A more specific route wins over the xch.nyc custom
+  // domain held by the landing page Worker, which keeps serving everything else.
+  // Both patterns are needed: /plotter/* doesn't match a bare /plotter.
+  "routes": [
+    { "pattern": "xch.nyc/plotter/*", "zone_name": "xch.nyc" },
+    { "pattern": "xch.nyc/plotter", "zone_name": "xch.nyc" }
+  ],
+  // Reachable only at xch.nyc, not also at a workers.dev address.
+  "workers_dev": false,
+  "observability": {
+    "enabled": true
+  }
+}

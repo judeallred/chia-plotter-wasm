@@ -1,0 +1,89 @@
+name: Deploy to xch.nyc/plotter
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 12
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+      # Type checks and builds for /plotter/, then nests the output under deploy/plotter/.
+      - run: scripts/build-deploy.sh
+      - uses: actions/upload-artifact@v7
+        with:
+          name: deploy
+          path: deploy
+          include-hidden-files: true
+          retention-days: 7
+
+  deploy:
+    needs: build
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          name: deploy
+          path: deploy
+      - name: Check the Cloudflare secrets are set
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          if [ -z "$CLOUDFLARE_API_TOKEN" ] || [ -z "$CLOUDFLARE_ACCOUNT_ID" ]; then
+            echo "::error::Set the CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID repository secrets to deploy."
+            exit 1
+          fi
+      # Pinned Wrangler 4; wrangler-action's bundled v3 can't deploy assets-only Workers.
+      - run: npx --yes wrangler@4.127.1 deploy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+
+  verify:
+    needs: deploy
+    runs-on: ubuntu-latest
+    steps:
+      - name: Wait for the deploy to propagate
+        run: sleep 15
+      - name: Check the plotter, its headers and its WASM
+        run: |
+          set -euo pipefail
+          headers=$(curl -fsSI https://xch.nyc/plotter/)
+          grep -qi '^cross-origin-opener-policy: same-origin' <<<"$headers" || { echo "::error::no COOP header"; exit 1; }
+          grep -qi '^cross-origin-embedder-policy: require-corp' <<<"$headers" || { echo "::error::no COEP header"; exit 1; }
+          curl -fsS https://xch.nyc/plotter/ | grep -q 'Browser Plotter' || { echo "::error::/plotter/ isn't the plotter"; exit 1; }
+          for f in pos2w32 pos2w64 pos2v; do
+            ct=$(curl -fsS -o /dev/null -w '%{content_type}' "https://xch.nyc/plotter/wasm/$f.wasm")
+            test "$ct" = "application/wasm" || { echo "::error::$f.wasm served as '$ct'"; exit 1; }
+          done
+          code=$(curl -s -o /dev/null -w '%{http_code}' -L https://xch.nyc/plotter)
+          test "$code" = 200 || { echo "::error::/plotter returned $code"; exit 1; }
+      # The landing page Worker must keep the rest of the domain.
+      - name: Check the landing page wasn't captured
+        run: |
+          set -euo pipefail
+          for url in https://xch.nyc/ https://www.xch.nyc/; do
+            if curl -fsSL "$url" | grep -q 'Browser Plotter'; then echo "::error::$url serves the plotter"; exit 1; fi
+          done
