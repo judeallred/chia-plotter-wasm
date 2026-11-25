@@ -34,7 +34,7 @@ interface Pos2v {
 let modulePromise: Promise<Pos2v> | null = null;
 function load(): Promise<Pos2v> {
   if (!modulePromise) {
-    const url = new URL("/wasm/pos2v.js", self.location.origin).href;
+    const url = new URL(`${import.meta.env.BASE_URL}wasm/pos2v.js`, self.location.origin).href;
     modulePromise = import(/* @vite-ignore */ url).then((m) =>
       m.default({ printErr: (s: string) => console.warn("[pos2v]", s), mainScriptUrlOrBlob: url }),
     ) as Promise<Pos2v>;

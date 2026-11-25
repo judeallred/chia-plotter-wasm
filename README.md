@@ -187,6 +187,21 @@ The page must be served with `Cross-Origin-Opener-Policy: same-origin` and
 `public/_headers` for static hosts). Saving into a folder needs the File System Access API
 (Chrome, Edge). Other browsers write to browser storage and download.
 
+## Deploying to xch.nyc/plotter
+
+`.github/workflows/deploy.yml` builds on every push and pull request and deploys on `main`, to an
+assets-only Cloudflare Worker (`wrangler.jsonc`) on the routes `xch.nyc/plotter/*` and `xch.nyc/plotter`. Those
+routes are more specific than the xch.nyc custom domain, so the landing page Worker keeps the rest of the domain.
+After deploying, the workflow checks the page, its cross-origin isolation headers and the WASM content type, and
+that the landing page still serves `/`.
+
+`scripts/build-deploy.sh` builds with `PLOTTER_BASE=/plotter/` and nests the output under `deploy/plotter/`,
+because Workers static assets can't mount a folder at a path prefix. It writes `deploy/_headers` with the
+`/plotter/` prefix. Without `PLOTTER_BASE` the site builds for `/` as before.
+
+The workflow needs the `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` repository secrets, with the same
+permissions as the other xch.nyc Workers.
+
 ## Verifying plots
 
 Set up chia-blockchain `main` once (Python 3.14; some pinned dependencies have no 3.15

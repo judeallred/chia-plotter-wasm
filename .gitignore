@@ -11,3 +11,5 @@ build/
 .DS_Store
 core/build-*/
 keys/target/
+deploy/
+.wrangler/
